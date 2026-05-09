@@ -23,7 +23,7 @@
  *     [ / -    : diminuir escala (uniforme ou no eixo selecionado)
  *     X/Y/Z    : selecionar eixo (pressione novamente para voltar ao modo uniforme)
  *
- *   ESC        : sair
+ *   ESC: sair
  */
 
 #include <iostream>
@@ -42,26 +42,23 @@ using namespace std;
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 
-// ─── Constants ────────────────────────────────────────────────────────────────
 
 const GLuint WIDTH  = 1000;
 const GLuint HEIGHT = 800;
 
 const string MODELS_DIR = "../assets/Modelos3D/";
 
-const float TRANSLATE_SPEED = 2.5f; // units / second
-const float SCALE_SPEED     = 1.0f; // scale / second
-const float ROT_SPEED       = 1.5f; // radians / second
+const float TRANSLATE_SPEED = 2.5f;
+const float SCALE_SPEED     = 1.0f;
+const float ROT_SPEED       = 1.5f;
 const float SCALE_MIN       = 0.05f;
 
-// ─── Transform mode ───────────────────────────────────────────────────────────
 
 enum TransformMode { MODE_TRANSLATE, MODE_ROTATE, MODE_SCALE };
 
 TransformMode currentMode = MODE_TRANSLATE;
-int           scaleAxis   = 0; // 0 = uniform, 1 = X, 2 = Y, 3 = Z
+int           scaleAxis   = 0;
 
-// ─── OBJ model ────────────────────────────────────────────────────────────────
 
 struct OBJModel
 {
@@ -82,7 +79,6 @@ int              activeObj = 0;
 
 bool keys[1024] = {};
 
-// ─── Shaders ──────────────────────────────────────────────────────────────────
 
 const GLchar* vertexShaderSource = R"glsl(
 #version 450
@@ -109,14 +105,12 @@ void main()
 }
 )glsl";
 
-// ─── Forward declarations ─────────────────────────────────────────────────────
 
 void   key_callback(GLFWwindow* window, int key, int scancode, int action, int mods);
 GLuint setupShader();
 int    loadSimpleOBJ(const string& filePath, int& nVertices);
 void   updateWindowTitle(GLFWwindow* window);
 
-// ─── Main ─────────────────────────────────────────────────────────────────────
 
 int main()
 {
@@ -161,7 +155,6 @@ int main()
 
     GLuint shader = setupShader();
 
-    // ── Load models ──────────────────────────────────────────────────────────
     auto addModel = [&](const string& file, const string& name,
                         glm::vec3 color, glm::vec3 pos)
     {
@@ -188,7 +181,6 @@ int main()
         return -1;
     }
 
-    // ── Matrices ──────────────────────────────────────────────────────────────
     glUseProgram(shader);
 
     glm::mat4 view = glm::lookAt(
@@ -214,7 +206,6 @@ int main()
 
     float prevTime = (float)glfwGetTime();
 
-    // ── Render loop ───────────────────────────────────────────────────────────
     while (!glfwWindowShouldClose(window))
     {
         float currTime = (float)glfwGetTime();
@@ -225,7 +216,6 @@ int main()
 
         OBJModel& obj = objects[activeObj];
 
-        // Continuous translation
         if (currentMode == MODE_TRANSLATE)
         {
             float step = TRANSLATE_SPEED * dt;
@@ -237,7 +227,6 @@ int main()
             if (keys[GLFW_KEY_K])                          obj.position.y -= step;
         }
 
-        // Continuous scale
         if (currentMode == MODE_SCALE)
         {
             float delta = 0.0f;
@@ -263,12 +252,10 @@ int main()
             }
         }
 
-        // Advance rotation angle for rotating objects
         for (auto& o : objects)
             if (o.rotX || o.rotY || o.rotZ)
                 o.rotAngle += ROT_SPEED * dt;
 
-        // ── Draw ──────────────────────────────────────────────────────────────
         glClearColor(0.08f, 0.08f, 0.12f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
@@ -288,7 +275,6 @@ int main()
 
             glBindVertexArray(o.VAO);
 
-            // Pass 1 – solid fill (pushed back slightly to avoid z-fighting with wireframe)
             glEnable(GL_POLYGON_OFFSET_FILL);
             glPolygonOffset(1.0f, 1.0f);
             glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
@@ -296,7 +282,6 @@ int main()
             glDrawArrays(GL_TRIANGLES, 0, o.nVertices);
             glDisable(GL_POLYGON_OFFSET_FILL);
 
-            // Pass 2 – wireframe overlay on the selected object (DESAFIO)
             if (selected)
             {
                 glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
@@ -316,7 +301,6 @@ int main()
     return 0;
 }
 
-// ─── Callbacks ────────────────────────────────────────────────────────────────
 
 void key_callback(GLFWwindow* window, int key, int scancode, int action, int mods)
 {
@@ -326,26 +310,22 @@ void key_callback(GLFWwindow* window, int key, int scancode, int action, int mod
         return;
     }
 
-    // Track key state for continuous input
     if (key >= 0 && key < 1024)
     {
         if      (action == GLFW_PRESS)   keys[key] = true;
         else if (action == GLFW_RELEASE) keys[key] = false;
     }
 
-    // One-shot actions on press only
     if (action != GLFW_PRESS) return;
 
-    // Cycle selected object
     if (key == GLFW_KEY_TAB)
     {
         activeObj = (activeObj + 1) % (int)objects.size();
-        scaleAxis = 0; // reset scale-axis selection on object change
+        scaleAxis = 0;
         updateWindowTitle(window);
         return;
     }
 
-    // Mode switches
     if (key == GLFW_KEY_T)
     {
         if (currentMode == MODE_ROTATE) { objects[activeObj].rotX = objects[activeObj].rotY = objects[activeObj].rotZ = false; }
@@ -360,7 +340,6 @@ void key_callback(GLFWwindow* window, int key, int scancode, int action, int mod
 
     OBJModel& obj = objects[activeObj];
 
-    // Rotation axis toggle (ROTATE mode) — enabling one axis disables the others
     if (currentMode == MODE_ROTATE)
     {
         if (key == GLFW_KEY_X) { obj.rotX = !obj.rotX; if (obj.rotX) { obj.rotY = obj.rotZ = false; } }
@@ -368,7 +347,6 @@ void key_callback(GLFWwindow* window, int key, int scancode, int action, int mod
         if (key == GLFW_KEY_Z) { obj.rotZ = !obj.rotZ; if (obj.rotZ) { obj.rotX = obj.rotY = false; } }
     }
 
-    // Scale axis selection (SCALE mode) — pressing same key again returns to uniform
     if (currentMode == MODE_SCALE)
     {
         if (key == GLFW_KEY_X) { scaleAxis = (scaleAxis == 1) ? 0 : 1; updateWindowTitle(window); }
@@ -377,7 +355,6 @@ void key_callback(GLFWwindow* window, int key, int scancode, int action, int mod
     }
 }
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 void updateWindowTitle(GLFWwindow* window)
 {
