@@ -1,47 +1,122 @@
-# Computação Gráfica - Híbrido
+# AV1 - Computação Gráfica
+## Selecionando e aplicando transformações em objetos 3D
 
-Repositório de exemplos de códigos em C++ utilizando OpenGL moderna (3.3+) criado para a Atividade Acadêmica Computação Gráfica do curso de graduação em Ciência da Computação - modalidade híbrida - da Unisinos. Ele é estruturado para facilitar a organização dos arquivos e a compilação dos projetos utilizando CMake.
+**Grupo:**
+- Bruno Groehs
+- Theo Rossetto
 
-## 📂 Estrutura do Repositório
+---
 
-```plaintext
-📂 CGCCHibrido/
-├── 📂 include/               # Cabeçalhos e bibliotecas de terceiros
-│   ├── 📂 glad/              # Cabeçalhos da GLAD (OpenGL Loader)
-│   │   ├── glad.h
-│   │   ├── 📂 KHR/           # Diretório com cabeçalhos da Khronos (GLAD)
-│   │       ├── khrplatform.h
-├── 📂 common/                # Código reutilizável entre os projetos
-│   ├── glad.c                # Implementação da GLAD
-├── 📂 src/                   # Código-fonte dos exemplos e exercícios
-│   ├── Hello3D.cpp           # Exemplo básico de renderização com OpenGL
-│   ├── ...                   # Outros exemplos e exercícios futuros
-├── 📂 build/                 # Diretório gerado pelo CMake (não incluído no repositório)
-├── 📂 assets/                # diretório com modelos 3D, texturas, fontes etc
-├── 📄 CMakeLists.txt         # Configuração do CMake para compilar os projetos
-├── 📄 README.md              # Este arquivo, com a documentação do repositório
-├── 📄 GettingStarted.md      # Tutorial detalhado sobre como compilar usando o CMake
+## Descrição
+
+Aplicação OpenGL que exibe múltiplos modelos 3D na cena com suporte a seleção de objetos e aplicação de transformações (translação, rotação e escala) via teclado.
+
+---
+
+## Pré-requisitos
+
+- [CMake](https://cmake.org/download/) (3.10+)
+- [MSYS2 / MinGW-UCRT64](https://www.msys2.org/)
+- [Git](https://git-scm.com/downloads)
+- GLAD (ver seção abaixo)
+
+---
+
+## Configuração da GLAD
+
+Antes de compilar, os arquivos da GLAD precisam estar presentes no repositório:
+
+1. Acesse [https://glad.dav1d.de/](https://glad.dav1d.de/)
+2. Configure: **API:** OpenGL | **Version:** 4.5 | **Profile:** Core | **Language:** C/C++
+3. Clique em *Generate* e baixe o zip
+4. Copie os arquivos para os diretórios:
+   - `glad.h` → `include/glad/`
+   - `khrplatform.h` → `include/glad/KHR/`
+   - `glad.c` → `Common/`
+
+---
+
+## Como compilar e executar
+
+### Via VS Code (recomendado)
+
+1. Abra a pasta do projeto no VS Code (`File → Open Folder`)
+2. `Ctrl+Shift+P` → `CMake: Configure` — selecione o kit **GCC MinGW-UCRT64**
+3. `Ctrl+Shift+P` → `CMake: Build`
+4. No terminal, execute a partir da pasta `build/`:
+
+```sh
+./AV1.exe
 ```
 
-Siga as instruções detalhadas em [GettingStarted.md](GettingStarted.md) para configurar e compilar o projeto.
+### Via terminal
 
-## ⚠️ **IMPORTANTE: Baixar a GLAD Manualmente**
-Para que o projeto funcione corretamente, é necessário **baixar a GLAD manualmente** utilizando o **GLAD Generator**.
+```sh
+mkdir build
+cd build
+cmake .. -G "MinGW Makefiles"
+cmake --build . --target AV1
+./AV1.exe
+```
 
-### 🔗 **Acesse o web service do GLAD**:
-👉 [GLAD Generator](https://glad.dav1d.de/)
+> O executável deve ser rodado a partir da pasta `build/` para que os caminhos dos modelos 3D sejam resolvidos corretamente.
 
-### ⚙️ **Configuração necessária:**
-- **API:** OpenGL  
-- **Version:** 3.3+ (ou superior compatível com sua máquina)  
-- **Profile:** Core  
-- **Language:** C/C++  
+---
 
-### 📥 **Baixe e extraia os arquivos:**
-Após a geração, extraia os arquivos baixados e coloque-os nos diretórios correspondentes:
-- Copie **`glad.h`** para `include/glad/`
-- Copie **`khrplatform.h`** para `include/glad/KHR/`
-- Copie **`glad.c`** para `common/`
+## Controles
 
-🚨 **Sem esses arquivos, a compilação falhará!** É necessário colocar esses arquivos nos diretórios corretos, conforme a orientação acima.
+| Tecla | Ação |
+|---|---|
+| `TAB` | Selecionar próximo objeto (cicla pela lista) |
+| `R` | Entrar no modo **Rotação** |
+| `T` | Entrar no modo **Translação** |
+| `S` | Entrar no modo **Escala** |
 
+### Modo Rotação (`R`)
+
+| Tecla | Ação |
+|---|---|
+| `X` | Ativar/desativar rotação contínua no eixo X |
+| `Y` | Ativar/desativar rotação contínua no eixo Y |
+| `Z` | Ativar/desativar rotação contínua no eixo Z |
+
+### Modo Translação (`T`)
+
+| Tecla | Ação |
+|---|---|
+| `W` / `↑` | Mover para frente (-Z) |
+| `↓` | Mover para trás (+Z) |
+| `A` / `←` | Mover para esquerda (-X) |
+| `D` / `→` | Mover para direita (+X) |
+| `I` | Mover para cima (+Y) |
+| `K` | Mover para baixo (-Y) |
+
+### Modo Escala (`S`)
+
+| Tecla | Ação |
+|---|---|
+| `]` | Aumentar escala (uniforme ou no eixo selecionado) |
+| `[` ou `-` | Diminuir escala (uniforme ou no eixo selecionado) |
+| `X` | Selecionar eixo X (pressione novamente para voltar ao uniforme) |
+| `Y` | Selecionar eixo Y (pressione novamente para voltar ao uniforme) |
+| `Z` | Selecionar eixo Z (pressione novamente para voltar ao uniforme) |
+
+| `ESC` | Fechar a aplicação |
+|---|---|
+
+---
+
+## Estrutura do projeto
+
+```
+📂 ComputacaoGrafica2026/
+├── 📂 src/
+│   ├── AV1.cpp          # Atividade Vivencial 1
+│   └── M2.cpp           # Desafio Módulo 2 (base)
+├── 📂 assets/
+│   └── 📂 Modelos3D/    # Arquivos .OBJ utilizados
+├── 📂 include/glad/     # Cabeçalhos GLAD
+├── 📂 Common/           # glad.c
+├── CMakeLists.txt
+└── README.md
+```

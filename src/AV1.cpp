@@ -12,7 +12,7 @@
  *
  *   Modo Translação (T):
  *     W / ↑    : mover -Z (frente)
- *     S / ↓    : mover +Z (trás)
+ *     ↓        : mover +Z (trás)   [S é reservado para o modo Escala]
  *     A / ←    : mover -X (esquerda)
  *     D / →    : mover +X (direita)
  *     I        : mover +Y (cima)
@@ -20,7 +20,7 @@
  *
  *   Modo Escala (S):
  *     ]        : aumentar escala (uniforme ou no eixo selecionado)
- *     [        : diminuir escala (uniforme ou no eixo selecionado)
+ *     [ / -    : diminuir escala (uniforme ou no eixo selecionado)
  *     X/Y/Z    : selecionar eixo (pressione novamente para voltar ao modo uniforme)
  *
  *   ESC        : sair
@@ -120,12 +120,25 @@ void   updateWindowTitle(GLFWwindow* window);
 
 int main()
 {
-    glfwInit();
+    if (!glfwInit())
+    {
+        cerr << "Failed to initialize GLFW\n";
+        return -1;
+    }
 
     GLFWwindow* window = glfwCreateWindow(WIDTH, HEIGHT, "AV1", nullptr, nullptr);
+    if (!window)
+    {
+        cerr << "Failed to create GLFW window\n";
+        glfwTerminate();
+        return -1;
+    }
     glfwMakeContextCurrent(window);
     glfwSwapInterval(1); // vsync
     glfwSetKeyCallback(window, key_callback);
+    glfwSetWindowFocusCallback(window, [](GLFWwindow*, int focused) {
+        if (!focused) std::fill(std::begin(keys), std::end(keys), false);
+    });
 
     if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress))
     {
@@ -138,8 +151,8 @@ int main()
     cout << "\nControles:\n"
          << "  TAB        - Selecionar proximo objeto\n"
          << "  R          - Modo Rotacao  (X/Y/Z para eixo)\n"
-         << "  T          - Modo Translacao (WASD / setas / I·K)\n"
-         << "  S          - Modo Escala  ([/] escala; X/Y/Z seleciona eixo)\n"
+         << "  T          - Modo Translacao (W/A/D/setas / I·K; DOWN=tras)\n"
+         << "  S          - Modo Escala  (]/[ ou - escala; X/Y/Z seleciona eixo)\n"
          << "  ESC        - Sair\n\n";
 
     int fbW, fbH;
@@ -217,7 +230,7 @@ int main()
         {
             float step = TRANSLATE_SPEED * dt;
             if (keys[GLFW_KEY_W] || keys[GLFW_KEY_UP])    obj.position.z -= step;
-            if (keys[GLFW_KEY_S] || keys[GLFW_KEY_DOWN])  obj.position.z += step;
+            if (keys[GLFW_KEY_DOWN])                       obj.position.z += step;
             if (keys[GLFW_KEY_A] || keys[GLFW_KEY_LEFT])  obj.position.x -= step;
             if (keys[GLFW_KEY_D] || keys[GLFW_KEY_RIGHT]) obj.position.x += step;
             if (keys[GLFW_KEY_I])                          obj.position.y += step;
@@ -228,8 +241,8 @@ int main()
         if (currentMode == MODE_SCALE)
         {
             float delta = 0.0f;
-            if (keys[GLFW_KEY_RIGHT_BRACKET]) delta =  SCALE_SPEED * dt;
-            if (keys[GLFW_KEY_LEFT_BRACKET])  delta = -SCALE_SPEED * dt;
+            if (keys[GLFW_KEY_RIGHT_BRACKET])                          delta =  SCALE_SPEED * dt;
+            if (keys[GLFW_KEY_LEFT_BRACKET] || keys[GLFW_KEY_MINUS]) delta = -SCALE_SPEED * dt;
             if (delta != 0.0f)
             {
                 switch (scaleAxis)
@@ -333,18 +346,26 @@ void key_callback(GLFWwindow* window, int key, int scancode, int action, int mod
     }
 
     // Mode switches
-    if (key == GLFW_KEY_T) { currentMode = MODE_TRANSLATE; scaleAxis = 0; updateWindowTitle(window); return; }
-    if (key == GLFW_KEY_R) { currentMode = MODE_ROTATE;    updateWindowTitle(window); return; }
-    if (key == GLFW_KEY_S) { currentMode = MODE_SCALE;     scaleAxis = 0; updateWindowTitle(window); return; }
+    if (key == GLFW_KEY_T)
+    {
+        if (currentMode == MODE_ROTATE) { objects[activeObj].rotX = objects[activeObj].rotY = objects[activeObj].rotZ = false; }
+        currentMode = MODE_TRANSLATE; scaleAxis = 0; updateWindowTitle(window); return;
+    }
+    if (key == GLFW_KEY_R) { currentMode = MODE_ROTATE; updateWindowTitle(window); return; }
+    if (key == GLFW_KEY_S)
+    {
+        if (currentMode == MODE_ROTATE) { objects[activeObj].rotX = objects[activeObj].rotY = objects[activeObj].rotZ = false; }
+        currentMode = MODE_SCALE; scaleAxis = 0; updateWindowTitle(window); return;
+    }
 
     OBJModel& obj = objects[activeObj];
 
-    // Rotation axis toggle (ROTATE mode)
+    // Rotation axis toggle (ROTATE mode) — enabling one axis disables the others
     if (currentMode == MODE_ROTATE)
     {
-        if (key == GLFW_KEY_X) { obj.rotX = !obj.rotX; obj.rotY = obj.rotZ = false; }
-        if (key == GLFW_KEY_Y) { obj.rotY = !obj.rotY; obj.rotX = obj.rotZ = false; }
-        if (key == GLFW_KEY_Z) { obj.rotZ = !obj.rotZ; obj.rotX = obj.rotY = false; }
+        if (key == GLFW_KEY_X) { obj.rotX = !obj.rotX; if (obj.rotX) { obj.rotY = obj.rotZ = false; } }
+        if (key == GLFW_KEY_Y) { obj.rotY = !obj.rotY; if (obj.rotY) { obj.rotX = obj.rotZ = false; } }
+        if (key == GLFW_KEY_Z) { obj.rotZ = !obj.rotZ; if (obj.rotZ) { obj.rotX = obj.rotY = false; } }
     }
 
     // Scale axis selection (SCALE mode) — pressing same key again returns to uniform
