@@ -95,8 +95,8 @@ cmake --build . --target AV1
 
 | Tecla | Ação |
 |---|---|
-| `]` | Aumentar escala (uniforme ou no eixo selecionado) |
-| `[` ou `-` | Diminuir escala (uniforme ou no eixo selecionado) |
+| `[` | Aumentar escala (uniforme ou no eixo selecionado) |
+| `´` | Diminuir escala (uniforme ou no eixo selecionado) |
 | `X` | Selecionar eixo X (pressione novamente para voltar ao uniforme) |
 | `Y` | Selecionar eixo Y (pressione novamente para voltar ao uniforme) |
 | `Z` | Selecionar eixo Z (pressione novamente para voltar ao uniforme) |
