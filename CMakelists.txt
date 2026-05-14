@@ -49,6 +49,7 @@ set(EXERCISES
     SpherePhong
     M2
     AV1
+    M3
 )
 
 add_compile_options(-Wno-pragmas)
