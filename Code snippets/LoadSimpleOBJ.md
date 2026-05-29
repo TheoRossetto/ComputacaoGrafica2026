@@ -140,4 +140,3 @@ return -1;
 - [`std::fstream`](https://cplusplus.com/reference/fstream/fstream/) - Manipulação de arquivos para leitura do `.OBJ`.  
 - [`std::sstream`](https://cplusplus.com/reference/sstream/istringstream/) - Processamento de strings para extrair dados das linhas do arquivo.  
 - [VAO, VBO e Shaders no OpenGL](https://learnopengl.com/Getting-started/Shaders) - Explicação detalhada sobre buffers e sua utilização na renderização.
-

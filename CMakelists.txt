@@ -50,6 +50,8 @@ set(EXERCISES
     M2
     AV1
     M3
+    M4
+    M4_vivencial
 )
 
 add_compile_options(-Wno-pragmas)
