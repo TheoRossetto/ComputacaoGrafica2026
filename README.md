@@ -2,7 +2,9 @@
 
 Bruno Groehs e Theo Rossetto
 
-Repositório das atividades da disciplina de Computação Gráfica. Cada módulo (M2–M6) e a atividade vivencial (AV1) são executáveis independentes.
+Repositório das atividades da disciplina de Computação Gráfica do semestre. Cada módulo (M2 até M6) e a atividade vivencial (AV1) são executáveis independentes, então dá pra rodar qualquer um sem depender dos outros.
+
+O M6 especificamente tem câmera FPS, iluminação Phong 3-pontos (key/fill/back), trajetórias Bézier por objeto com De Casteljau, e um HUD de ajuda na tela.
 
 ---
 
@@ -10,24 +12,23 @@ Repositório das atividades da disciplina de Computação Gráfica. Cada módulo
 
 ### Dependências
 
-- CMake 3.10+ — https://cmake.org/download/
+- CMake 3.10 ou superior — https://cmake.org/download/
 - MSYS2 com GCC ucrt64 — https://www.msys2.org/
-- Git (necessário para o CMake baixar as libs automaticamente)
-- GLFW, GLM e stb são baixados automaticamente pelo CMake na primeira configuração
+- Git (o CMake usa pra baixar as dependências automaticamente)
 
-A única dependência que precisa ser configurada manualmente é a GLAD:
+GLFW, GLM, stb_image e stb_easy_font são baixados e compilados pelo próprio CMake na primeira vez, sem precisar instalar nada. A única dependência que precisa de atenção manual é a GLAD:
 
 1. Acesse https://glad.dav1d.de/
 2. Selecione: Language C/C++, API gl versão 4.5, Profile Core
-3. Clique em Generate e baixe o zip
-4. Copie os arquivos:
-   - `glad.h` para `include/glad/`
-   - `khrplatform.h` para `include/glad/KHR/`
-   - `glad.c` para `common/`
+3. Gera e baixa o zip
+4. Coloca os arquivos nos lugares certos:
+   - `glad.h` → `include/glad/`
+   - `khrplatform.h` → `include/glad/KHR/`
+   - `glad.c` → `common/`
 
 ### Compilação
 
-O caminho do repositório tem o caractere `ç` em `computaçaoGrafica`, o que quebra o mingw32-make ao tentar referenciar os arquivos fonte. O jeito que funciona é copiar os arquivos para um caminho sem caracteres especiais antes de compilar:
+O caminho do repositório tem `ç` em `computaçaoGrafica`, o que quebra o mingw32-make na hora de referenciar os arquivos fonte. A solução que funciona é copiar tudo pra um caminho sem caracteres especiais antes de compilar:
 
 ```bash
 SRC="c:/Users/<usuario>/Documents/Applications/computaçaoGrafica/ComputacaoGrafica2026"
@@ -44,7 +45,7 @@ cd /c/tmp/cg_build
 mingw32-make M6
 ```
 
-A primeira vez que o CMake roda ele clona e compila o GLFW, o que pode demorar alguns minutos.
+Na primeira vez o CMake vai clonar e compilar o GLFW, então pode demorar alguns minutos.
 
 ### Execução
 
@@ -53,19 +54,19 @@ cd /c/tmp/cg_build
 ./M6.exe
 ```
 
-O executável precisa ser rodado a partir da pasta `build/` porque os modelos são referenciados como `../assets/Modelos3D/`.
+O executável precisa ser rodado de dentro da pasta de build porque os modelos são referenciados com caminho relativo (`../assets/Modelos3D/`).
 
 ---
 
 ## Assets
 
-Todos os modelos foram criados e exportados por nós no Blender 4.3.0. São primitivas padrão do próprio Blender — nada foi baixado de repositório externo.
+Todos os modelos foram feitos e exportados por nós no Blender 4.3.0. São primitivas padrão do Blender mesmo, nada baixado de fora.
 
-**Suzanne.obj** — o macaco padrão do Blender (Add → Mesh → Monkey), exportado como .obj com UV unwrap padrão. A textura `Suzanne.png` foi gerada no próprio Blender.
+**Suzanne.obj** — o macaco clássico do Blender (Add → Mesh → Monkey), exportado como .obj com UV unwrap padrão. A textura `Suzanne.png` foi gerada no próprio Blender.
 
-**SuzanneSubdiv1.obj** — a mesma Suzanne com o modificador Subdivision Surface nível 1 aplicado antes do export. Usa a mesma textura.
+**SuzanneSubdiv1.obj** — a mesma Suzanne com Subdivision Surface nível 1 aplicado antes do export. Usa a mesma textura.
 
-**Cube.obj** — cubo primitivo padrão (Add → Mesh → Cube), sem textura.
+**Cube.obj** — cubo padrão, sem textura.
 
 **pixelWall.png** — textura de parede pixelada gerada proceduralmente, usada em exercícios anteriores.
 
@@ -73,16 +74,16 @@ Todos os modelos foram criados e exportados por nós no Blender 4.3.0. São prim
 
 ## Referências
 
-**LearnOpenGL** (Joey de Vries) — principal referência durante o semestre inteiro, especialmente os capítulos de transformações, câmera FPS, iluminação Phong e materiais.
+**LearnOpenGL** (Joey de Vries) — principal referência do semestre todo, especialmente os capítulos de transformações, câmera FPS, iluminação Phong e materiais.
 https://learnopengl.com/
 
-**Especificação do formato .obj e .mtl** — consultada para implementar o parser manual em `loadSimpleOBJ`.
+**Especificação do .obj e .mtl** — consultada pra implementar o parser em `loadSimpleOBJ`.
 http://paulbourke.net/dataformats/obj/
 
-**Algoritmo de De Casteljau** — base do sistema de trajetórias Bézier implementado no M6.
+**Algoritmo de De Casteljau** — base da avaliação da curva Bézier no M6.
 https://en.wikipedia.org/wiki/De_Casteljau%27s_algorithm
 
-**Arc-length parameterization** — técnica usada para manter velocidade constante na curva Bézier.
+**Arc-length parameterization** — técnica usada pra estimar o comprimento da curva e manter velocidade constante.
 https://pomax.github.io/bezierinfo/#tracing
 
 **Documentação do GLFW** — https://www.glfw.org/docs/latest/
@@ -91,4 +92,4 @@ https://pomax.github.io/bezierinfo/#tracing
 
 **OpenGL Reference Pages** — https://registry.khronos.org/OpenGL-Refpages/gl4/
 
-Além disso, os slides e o código-base fornecidos pelo professor foram a referência de partida para os primeiros módulos.
+Os slides e o código-base do professor foram ponto de partida pra maioria dos módulos.
