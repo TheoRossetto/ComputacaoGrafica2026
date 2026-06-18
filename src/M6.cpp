@@ -353,6 +353,7 @@ struct Trajectory
 struct OBJModel
 {
     GLuint    VAO        = 0;
+    GLuint    VBO        = 0;   // mantido para liberação no cleanup
     GLuint    texID      = 0;
     int       nVertices  = 0;
     glm::vec3 position   = glm::vec3(0.0f);
@@ -396,13 +397,13 @@ void   scroll_callback(GLFWwindow*, double, double);
 GLuint setupShader();
 GLuint setupLineShader();
 GLuint setupHudShader();
-int    loadSimpleOBJ(const string&, int&, string&, Material&);
+int    loadSimpleOBJ(const string&, int&, string&, Material&, GLuint& outVBO);
 GLuint loadTexture(const string&);
 void   updateWindowTitle(GLFWwindow*);
 void   saveTrajectories();
 void   loadTrajectories();
 void   uploadLights(GLuint shader);
-void   drawHUD(GLuint hudShader, GLuint hudVAO, GLuint hudVBO);
+void   drawHUD(GLuint hudShader, GLuint hudVAO, GLuint hudVBO, GLuint hudIBO);
 
 
 // ─── main ─────────────────────────────────────────────────────────────────────
@@ -477,13 +478,15 @@ int main()
 
     // VAO/VBO para o HUD 2D (stb_easy_font gera quads)
     GLuint hudShader = setupHudShader();
-    GLuint hudVAO = 0, hudVBO = 0;
+    GLuint hudVAO = 0, hudVBO = 0, hudIBO = 0;
     glGenVertexArrays(1, &hudVAO);
     glGenBuffers(1, &hudVBO);
+    glGenBuffers(1, &hudIBO);
     glBindVertexArray(hudVAO);
     glBindBuffer(GL_ARRAY_BUFFER, hudVBO);
-    // stride = 16 bytes (x,y,z float + rgba uint8x4); só usamos x,y (location 0)
-    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 16, (GLvoid*)0);
+    // hudText() já extrai apenas x,y para um buffer próprio (stride 8 bytes).
+    // Os fundos / sombras / bordas também são xy puros — stride 8 é o formato unificado.
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), (GLvoid*)0);
     glEnableVertexAttribArray(0);
     glBindBuffer(GL_ARRAY_BUFFER, 0);
     glBindVertexArray(0);
@@ -501,7 +504,7 @@ int main()
         m.position = pos;
 
         string texPath;
-        int vaoID = loadSimpleOBJ(MODELS_DIR + file, m.nVertices, texPath, m.mat);
+        int vaoID = loadSimpleOBJ(MODELS_DIR + file, m.nVertices, texPath, m.mat, m.VBO);
         if (vaoID < 0) return;
         m.VAO = (GLuint)vaoID;
 
@@ -734,7 +737,7 @@ int main()
         glBindVertexArray(0);
 
         // ── HUD de ajuda ──────────────────────────────────────────────────
-        drawHUD(hudShader, hudVAO, hudVBO);
+        drawHUD(hudShader, hudVAO, hudVBO, hudIBO);
 
         glfwSwapBuffers(window);
     }
@@ -744,8 +747,18 @@ int main()
     glDeleteProgram(lineShader);
 
     glDeleteBuffers(1, &hudVBO);
+    glDeleteBuffers(1, &hudIBO);
     glDeleteVertexArrays(1, &hudVAO);
     glDeleteProgram(hudShader);
+
+    // Libera VAO/VBO/textura de cada modelo carregado
+    for (auto& o : objects)
+    {
+        if (o.VBO)   glDeleteBuffers(1, &o.VBO);
+        if (o.VAO)   glDeleteVertexArrays(1, &o.VAO);
+        if (o.texID) glDeleteTextures(1, &o.texID);
+    }
+    glDeleteProgram(shader);
 
     glfwTerminate();
     return 0;
@@ -910,7 +923,7 @@ void key_callback(GLFWwindow* window, int key, int scancode, int action, int mod
     if (key == GLFW_KEY_L) { saveTrajectories(); return; }
 
     // O – carregar pontos de controle
-    if (key == GLFW_KEY_O) { loadTrajectories(); return; }
+    if (key == GLFW_KEY_O) { loadTrajectories(); updateWindowTitle(window); return; }
 }
 
 void mouse_callback(GLFWwindow* window, double xpos, double ypos)
@@ -929,15 +942,29 @@ void scroll_callback(GLFWwindow* window, double xoffset, double yoffset)
 void uploadLights(GLuint shader)
 {
     glUseProgram(shader);
+
+    // Cache estático: glGetUniformLocation só corre na primeira chamada por shader.
+    static GLuint  cachedShader = 0;
+    static GLint   posLoc[3], colLoc[3], onLoc[3];
+    if (cachedShader != shader)
+    {
+        for (int i = 0; i < 3; ++i)
+        {
+            string base    = "lightPos["   + to_string(i) + "]";
+            string colBase = "lightColor[" + to_string(i) + "]";
+            string onBase  = "lightOn["    + to_string(i) + "]";
+            posLoc[i] = glGetUniformLocation(shader, base.c_str());
+            colLoc[i] = glGetUniformLocation(shader, colBase.c_str());
+            onLoc[i]  = glGetUniformLocation(shader, onBase.c_str());
+        }
+        cachedShader = shader;
+    }
+
     for (int i = 0; i < 3; ++i)
     {
-        string base = "lightPos[" + to_string(i) + "]";
-        string colBase = "lightColor[" + to_string(i) + "]";
-        string onBase  = "lightOn["    + to_string(i) + "]";
-
-        glUniform3fv(glGetUniformLocation(shader, base.c_str()),    1, glm::value_ptr(lights[i].pos));
-        glUniform3fv(glGetUniformLocation(shader, colBase.c_str()), 1, glm::value_ptr(lights[i].color));
-        glUniform1i (glGetUniformLocation(shader, onBase.c_str()),  lights[i].on ? 1 : 0);
+        glUniform3fv(posLoc[i], 1, glm::value_ptr(lights[i].pos));
+        glUniform3fv(colLoc[i], 1, glm::value_ptr(lights[i].color));
+        glUniform1i (onLoc[i],  lights[i].on ? 1 : 0);
     }
 }
 
@@ -1196,8 +1223,9 @@ GLuint setupHudShader()
 }
 
 // Desenha uma linha de texto usando stb_easy_font.
-// vbo e vao devem já ter sido configurados com stride=16, attrib 0 = vec2.
-static void hudText(GLuint vbo, float px, float py, float scale, const char* text)
+// vbo e vao devem já ter sido configurados com stride=8, attrib 0 = vec2.
+// ibo é reutilizado entre chamadas (evita gen/delete por frame).
+static void hudText(GLuint vbo, GLuint ibo, float px, float py, float scale, const char* text)
 {
     static char buf[99999];
     int nq = stb_easy_font_print(0, 0, const_cast<char*>(text), NULL, buf, sizeof(buf));
@@ -1229,19 +1257,16 @@ static void hudText(GLuint vbo, float px, float py, float scale, const char* tex
     glBufferData(GL_ARRAY_BUFFER, verts.size() * sizeof(float), verts.data(), GL_DYNAMIC_DRAW);
     glBindBuffer(GL_ARRAY_BUFFER, 0);
 
-    // IBO temporário
-    GLuint ibo;
-    glGenBuffers(1, &ibo);
+    // IBO persistente (reutilizado entre chamadas)
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ibo);
     glBufferData(GL_ELEMENT_ARRAY_BUFFER, idx.size() * sizeof(unsigned int), idx.data(), GL_DYNAMIC_DRAW);
 
     glDrawElements(GL_TRIANGLES, (GLsizei)idx.size(), GL_UNSIGNED_INT, 0);
 
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
-    glDeleteBuffers(1, &ibo);
 }
 
-void drawHUD(GLuint hudShader, GLuint hudVAO, GLuint hudVBO)
+void drawHUD(GLuint hudShader, GLuint hudVAO, GLuint hudVBO, GLuint hudIBO)
 {
     // Projeção ortogonal: pixel (0,0) = canto sup-esq, y cresce pra baixo
     glm::mat4 ortho = glm::ortho(0.0f, (float)WIDTH, (float)HEIGHT, 0.0f, -1.0f, 1.0f);
@@ -1290,7 +1315,7 @@ void drawHUD(GLuint hudShader, GLuint hudVAO, GLuint hudVBO)
         glDrawArrays(GL_TRIANGLES, 0, 6);
 
         glUniform4f(colLoc, 0.85f, 0.90f, 1.0f, 1.0f);
-        hudText(hudVBO, 6.0f, 5.0f, 1.5f, statusLine.c_str());
+        hudText(hudVBO, hudIBO, 6.0f, 5.0f, 1.5f, statusLine.c_str());
     }
 
     // ── Painel completo de ajuda (visível quando showHelp == true) ───────
@@ -1349,7 +1374,10 @@ void drawHUD(GLuint hudShader, GLuint hudVAO, GLuint hudVBO)
 
         int totalLines = 0;
         for (auto& s : sections) totalLines += 1 + (int)s.entries.size();
-        float panelH = PAD + totalLines * LHEIGHT + sections.size() * (SHEIGHT - LHEIGHT) + PAD;
+        // PAD topo + (titulo + 1.1*SHEIGHT) + separador (~6px) + linhas + cabecalhos extra + PAD base
+        float titleBlock = SHEIGHT * 1.1f + 6.0f;
+        float panelH = PAD + titleBlock + totalLines * LHEIGHT
+                     + sections.size() * (SHEIGHT - LHEIGHT) + PAD;
         float panelW = PAD + COL_KEY + COL_DESC + PAD;
         float px = (float)WIDTH  - panelW - 12.0f;
         float py = 28.0f;  // abaixo da barra de status
@@ -1399,7 +1427,7 @@ void drawHUD(GLuint hudShader, GLuint hudVAO, GLuint hudVBO)
         // Título do painel
         float cy = py + PAD;
         glUniform4f(colLoc, 1.0f, 1.0f, 1.0f, 1.0f);
-        hudText(hudVBO, px + PAD, cy, SCALE, "CONTROLES  (H = fechar)");
+        hudText(hudVBO, hudIBO, px + PAD, cy, SCALE, "CONTROLES  (H = fechar)");
         cy += SHEIGHT * 1.1f;
 
         // Linha separadora
@@ -1429,7 +1457,7 @@ void drawHUD(GLuint hudShader, GLuint hudVAO, GLuint hudVBO)
                 glDrawArrays(GL_TRIANGLES, 0, 6);
             }
             glUniform4f(colLoc, 0.55f, 0.80f, 1.00f, 1.0f);
-            hudText(hudVBO, px + PAD + 2, cy, SCALE, sec.title);
+            hudText(hudVBO, hudIBO, px + PAD + 2, cy, SCALE, sec.title);
             cy += SHEIGHT;
 
             // Entradas
@@ -1439,11 +1467,11 @@ void drawHUD(GLuint hudShader, GLuint hudVAO, GLuint hudVBO)
                 {
                     // Tecla em amarelo
                     glUniform4f(colLoc, 1.0f, 0.88f, 0.30f, 1.0f);
-                    hudText(hudVBO, px + PAD + 4, cy, SCALE, e.key);
+                    hudText(hudVBO, hudIBO, px + PAD + 4, cy, SCALE, e.key);
                 }
                 // Descrição em branco suave
                 glUniform4f(colLoc, 0.85f, 0.88f, 0.92f, 1.0f);
-                hudText(hudVBO, px + PAD + COL_KEY, cy, SCALE, e.desc);
+                hudText(hudVBO, hudIBO, px + PAD + COL_KEY, cy, SCALE, e.desc);
                 cy += LHEIGHT;
             }
         }
@@ -1457,7 +1485,7 @@ void drawHUD(GLuint hudShader, GLuint hudVAO, GLuint hudVBO)
 
 // ─── Carregamento de OBJ ─────────────────────────────────────────────────────
 
-int loadSimpleOBJ(const string& filePath, int& nVertices, string& texturePath, Material& mat)
+int loadSimpleOBJ(const string& filePath, int& nVertices, string& texturePath, Material& mat, GLuint& outVBO)
 {
     vector<glm::vec3> positions;
     vector<glm::vec2> texCoords;
@@ -1580,5 +1608,6 @@ int loadSimpleOBJ(const string& filePath, int& nVertices, string& texturePath, M
 
     nVertices = (int)(vBuffer.size() / 8);
     cout << "Carregado: " << filePath << "  (" << nVertices << " vertices)\n";
+    outVBO = VBO;
     return (int)VAO;
 }
