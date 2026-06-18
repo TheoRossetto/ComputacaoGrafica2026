@@ -1,8 +1,5 @@
 /*
- M6 - Trajetórias para Objetos 3D (continuação de M5)
-
- Cada objeto da cena possui uma lista de pontos de controle (waypoints).
- O objeto percorre esses pontos ciclicamente com translação linear.
+ M6 - Trajetórias Bézier para Objetos 3D
 
  Controles de câmera:
    WASD       - Mover câmera (frente/esq/atrás/dir)
@@ -15,12 +12,20 @@
    R          - Modo Rotação  (X/Y/Z para eixo)
    F          - Modo Escala   (]/[ escala uniforme)
 
- Trajetória:
-   P          - Adicionar posição atual do objeto como waypoint
-   C          - Ligar/desligar seguir trajetória (cyclic follow)
-   BACKSPACE  - Remover último waypoint do objeto selecionado
-   L          - Salvar waypoints em arquivo  (trajectories.txt)
-   O          - Carregar waypoints de arquivo (trajectories.txt)
+ Material e textura:
+   M          - Ligar/desligar textura do objeto selecionado
+
+ Iluminação (3 pontos):
+   1          - Ligar/desligar Luz Key   (principal)
+   2          - Ligar/desligar Luz Fill  (preenchimento)
+   3          - Ligar/desligar Luz Back  (contraluz)
+
+ Trajetória (curva de Bézier):
+   P          - Adicionar posição atual como ponto de controle
+   C          - Pausar/retomar trajetória (Bézier cíclica)
+   BACKSPACE  - Remover último ponto de controle
+   L          - Salvar pontos em arquivo  (trajectories.txt)
+   O          - Carregar pontos de arquivo (trajectories.txt)
 
  ESC - Sair
 */
@@ -32,6 +37,7 @@
 #include <string>
 #include <vector>
 #include <algorithm>
+#include <cmath>
 
 using namespace std;
 
@@ -45,6 +51,9 @@ using namespace std;
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
 
+#define STB_EASY_FONT_IMPLEMENTATION
+#include <stb_easy_font.h>
+
 
 // ─── Constantes ──────────────────────────────────────────────────────────────
 
@@ -52,17 +61,20 @@ const GLuint WIDTH  = 1000;
 const GLuint HEIGHT = 800;
 
 const string MODELS_DIR    = "../assets/Modelos3D/";
-const string TRAJ_FILENAME = "trajectories.txt";   // salvo no diretório de trabalho
+const string TRAJ_FILENAME = "trajectories.txt";
 
-const float TRANSLATE_SPEED  = 2.5f;
-const float SCALE_SPEED      = 1.0f;
-const float ROT_SPEED        = 1.5f;
-const float SCALE_MIN        = 0.05f;
-const float TRAJ_SPEED       = 2.0f;   // unidades/segundo ao percorrer trajetória
+const float TRANSLATE_SPEED = 2.5f;
+const float SCALE_SPEED     = 1.0f;
+const float ROT_SPEED       = 1.5f;
+const float SCALE_MIN       = 0.05f;
+const float TRAJ_SPEED      = 1.5f;   // t/segundo (normalizado pelo comprimento de arco)
+
+const int BEZIER_SAMPLES = 64;  // amostras para visualizar a curva
 
 
 // ─── Shaders ─────────────────────────────────────────────────────────────────
 
+// Shader principal: Phong com 3 fontes de luz
 const GLchar* vertexShaderSource = R"glsl(
 #version 450
 layout(location = 0) in vec3 position;
@@ -87,6 +99,7 @@ void main()
 }
 )glsl";
 
+// Iluminação Phong com 3 fontes independentes (key / fill / back)
 const GLchar* fragmentShaderSource = R"glsl(
 #version 450
 in vec2 texCoord;
@@ -97,7 +110,6 @@ uniform sampler2D texBuff;
 uniform int       useTexture;
 uniform vec3      objectColor;
 
-uniform vec3  lightPos;
 uniform vec3  camPos;
 
 uniform vec3  Ka;
@@ -105,31 +117,61 @@ uniform vec3  Kd;
 uniform vec3  Ks;
 uniform float Ns;
 
+// 3-point lighting
+uniform vec3 lightPos[3];
+uniform vec3 lightColor[3];
+uniform int  lightOn[3];
+
 out vec4 color;
 
 void main()
 {
-    vec3 lightColor = vec3(1.0);
-    vec3 baseColor  = (useTexture == 1) ? vec3(texture(texBuff, texCoord)) : objectColor;
+    vec3 baseColor = (useTexture == 1) ? vec3(texture(texBuff, texCoord)) : objectColor;
 
-    vec3 ambient = Ka * lightColor;
+    vec3 N = normalize(vNormal);
+    vec3 V = normalize(camPos - fragPos);
 
-    vec3  N    = normalize(vNormal);
-    vec3  L    = normalize(lightPos - fragPos);
-    float diff = max(dot(N, L), 0.0);
-    vec3  diffuse = Kd * diff * lightColor;
+    // Ambient global (modulado por Ka)
+    vec3 result = Ka * vec3(0.25) * baseColor;
 
-    vec3  R    = normalize(reflect(-L, N));
-    vec3  V    = normalize(camPos - fragPos);
-    float spec = pow(max(dot(R, V), 0.0), Ns);
-    vec3  specular = Ks * spec * lightColor;
+    // Contribuição de cada fonte de luz ativa
+    for (int i = 0; i < 3; ++i)
+    {
+        if (lightOn[i] == 0) continue;
 
-    vec3 result = (ambient + diffuse) * baseColor + specular;
+        vec3  L    = normalize(lightPos[i] - fragPos);
+        float diff = max(dot(N, L), 0.0);
+        vec3  diffuse = Kd * diff * lightColor[i];
+
+        vec3  R    = normalize(reflect(-L, N));
+        float spec = pow(max(dot(R, V), 0.0), Ns);
+        vec3  specular = Ks * spec * lightColor[i];
+
+        result += diffuse * baseColor + specular;
+    }
+
     color = vec4(result, 1.0);
 }
 )glsl";
 
-// Shader minimalista para desenhar waypoints (linhas e pontos coloridos)
+// ─── Shaders 2D para o overlay HUD ───────────────────────────────────────────
+// Coordenadas em pixels (0,0 = canto superior esquerdo).
+// A projeção ortogonal é enviada como uniform.
+const GLchar* hudVertexShaderSource = R"glsl(
+#version 450
+layout(location = 0) in vec2 pos;
+uniform mat4 ortho;
+void main() { gl_Position = ortho * vec4(pos, 0.0, 1.0); }
+)glsl";
+
+const GLchar* hudFragmentShaderSource = R"glsl(
+#version 450
+uniform vec4 hudColor;
+out vec4 color;
+void main() { color = hudColor; }
+)glsl";
+
+// Shader minimalista para waypoints/curva Bézier
 const GLchar* lineVertexShaderSource = R"glsl(
 #version 450
 layout(location = 0) in vec3 position;
@@ -241,85 +283,88 @@ struct Material
     float     Ns = 32.0f;
 };
 
-// Estado de trajetória de um objeto
+struct LightSource
+{
+    glm::vec3 pos;
+    glm::vec3 color;
+    bool      on;
+    string    name;
+};
+
+// Trajetória de Bézier: os waypoints são os PONTOS DE CONTROLE.
+// O parâmetro global t ∈ [0,1] percorre toda a curva (cíclico ao atingir 1).
+// A posição é avaliada pelo algoritmo de De Casteljau.
 struct Trajectory
 {
-    vector<glm::vec3> waypoints;  // pontos de controle no espaço 3D
-    bool   active     = false;    // se está seguindo a trajetória
-    int    currentSeg = 0;        // índice do segmento atual  (de waypoints[i] para [i+1])
-    float  t          = 0.0f;     // parâmetro [0,1] dentro do segmento atual
+    vector<glm::vec3> waypoints;  // pontos de controle
+    bool  active  = false;
+    float t       = 0.0f;   // parâmetro global [0,1]
+    float arcLen  = 1.0f;   // comprimento de arco estimado (cache)
+    bool  dirty   = true;   // recalcular arcLen antes do próximo advance()
 
-    // Avança a trajetória por dt segundos e retorna a posição interpolada.
-    // Retorna glm::vec3(0) se não houver waypoints suficientes.
+    // Avalia a curva de Bézier em 'param' via De Casteljau
+    glm::vec3 evalBezier(float param) const
+    {
+        int n = (int)waypoints.size();
+        if (n == 0) return glm::vec3(0.0f);
+        if (n == 1) return waypoints[0];
+
+        vector<glm::vec3> pts(waypoints);
+        int sz = n;
+        while (sz > 1)
+        {
+            for (int i = 0; i < sz - 1; ++i)
+                pts[i] = glm::mix(pts[i], pts[i + 1], param);
+            --sz;
+        }
+        return pts[0];
+    }
+
+    // Estima o comprimento de arco por amostragem uniforme de t
+    void recomputeLength(int samples = 128)
+    {
+        arcLen = 0.0f;
+        if (waypoints.size() < 2) { dirty = false; return; }
+
+        glm::vec3 prev = evalBezier(0.0f);
+        for (int i = 1; i <= samples; ++i)
+        {
+            glm::vec3 cur = evalBezier((float)i / samples);
+            arcLen += glm::length(cur - prev);
+            prev = cur;
+        }
+        arcLen = max(arcLen, 1e-5f);
+        dirty  = false;
+    }
+
+    // Avança a trajetória em dt segundos e retorna a nova posição
     glm::vec3 advance(float dt)
     {
         if (waypoints.size() < 2) return glm::vec3(0.0f);
+        if (dirty) recomputeLength();
 
-        int n = (int)waypoints.size();
+        t += dt * TRAJ_SPEED / arcLen;
+        if (t >= 1.0f) t = fmod(t, 1.0f);
 
-        glm::vec3 from = waypoints[currentSeg];
-        glm::vec3 to   = waypoints[(currentSeg + 1) % n];
-
-        float segLen = glm::length(to - from);
-
-        // Se o segmento atual é degenerado (waypoints coincidentes), salta sem
-        // consumir t — evita inflar t com divisão por valor minúsculo e evita
-        // travas com vários waypoints duplicados consecutivos.
-        int safety = n;  // limita a no máximo n saltos por chamada
-        while (segLen <= 1e-5f && safety-- > 0)
-        {
-            currentSeg = (currentSeg + 1) % n;
-            t = 0.0f;
-            from = waypoints[currentSeg];
-            to   = waypoints[(currentSeg + 1) % n];
-            segLen = glm::length(to - from);
-        }
-        // Todos os segmentos são degenerados — fica parado no waypoint atual.
-        if (segLen <= 1e-5f) return waypoints[currentSeg];
-
-        float segTime = segLen / TRAJ_SPEED;
-        t += dt / segTime;
-
-        while (t >= 1.0f)
-        {
-            t -= 1.0f;
-            currentSeg = (currentSeg + 1) % n;
-            from = waypoints[currentSeg];
-            to   = waypoints[(currentSeg + 1) % n];
-            segLen = glm::length(to - from);
-
-            // Pode cair em um segmento degenerado: pula sem consumir t.
-            int safety2 = n;
-            while (segLen <= 1e-5f && safety2-- > 0)
-            {
-                currentSeg = (currentSeg + 1) % n;
-                from = waypoints[currentSeg];
-                to   = waypoints[(currentSeg + 1) % n];
-                segLen = glm::length(to - from);
-            }
-            if (segLen <= 1e-5f) return waypoints[currentSeg];
-
-            segTime = segLen / TRAJ_SPEED;
-        }
-
-        return glm::mix(from, to, t);
+        return evalBezier(t);
     }
 };
 
 struct OBJModel
 {
-    GLuint    VAO       = 0;
-    GLuint    texID     = 0;
-    int       nVertices = 0;
-    glm::vec3 position  = glm::vec3(0.0f);
-    glm::vec3 scale     = glm::vec3(1.0f);
-    float     rotAngle  = 0.0f;
+    GLuint    VAO        = 0;
+    GLuint    texID      = 0;
+    int       nVertices  = 0;
+    glm::vec3 position   = glm::vec3(0.0f);
+    glm::vec3 scale      = glm::vec3(1.0f);
+    float     rotAngle   = 0.0f;
     bool      rotX = false, rotY = false, rotZ = false;
-    glm::vec3 color     = glm::vec3(1.0f);
+    glm::vec3 color      = glm::vec3(1.0f);
     string    name;
     Material  mat;
+    bool      showTexture = true;  // alterna com tecla M
 
-    Trajectory traj;  // trajetória deste objeto
+    Trajectory traj;
 };
 
 
@@ -333,6 +378,14 @@ TransformMode currentMode = MODE_TRANSLATE;
 vector<OBJModel> objects;
 int              activeObj = 0;
 bool             keys[1024] = {};
+bool             showHelp   = true;   // H toggle
+
+// Iluminação de 3 pontos
+LightSource lights[3] = {
+    { glm::vec3( 5.0f, 6.0f,  5.0f), glm::vec3(1.00f, 0.95f, 0.90f), true,  "Key"  },
+    { glm::vec3(-4.0f, 3.0f,  4.0f), glm::vec3(0.40f, 0.50f, 0.80f), true,  "Fill" },
+    { glm::vec3( 0.0f, 4.0f, -6.0f), glm::vec3(0.70f, 0.60f, 0.90f), true,  "Back" },
+};
 
 
 // ─── Declarações ─────────────────────────────────────────────────────────────
@@ -342,11 +395,14 @@ void   mouse_callback (GLFWwindow*, double, double);
 void   scroll_callback(GLFWwindow*, double, double);
 GLuint setupShader();
 GLuint setupLineShader();
+GLuint setupHudShader();
 int    loadSimpleOBJ(const string&, int&, string&, Material&);
 GLuint loadTexture(const string&);
 void   updateWindowTitle(GLFWwindow*);
 void   saveTrajectories();
 void   loadTrajectories();
+void   uploadLights(GLuint shader);
+void   drawHUD(GLuint hudShader, GLuint hudVAO, GLuint hudVBO);
 
 
 // ─── main ─────────────────────────────────────────────────────────────────────
@@ -356,7 +412,7 @@ int main()
     if (!glfwInit()) { cerr << "Failed to initialize GLFW\n"; return -1; }
 
     GLFWwindow* window = glfwCreateWindow(WIDTH, HEIGHT,
-        "M6 - Trajetorias", nullptr, nullptr);
+        "M6 - Bezier & 3-Point Lighting", nullptr, nullptr);
     if (!window) { cerr << "Failed to create GLFW window\n"; glfwTerminate(); return -1; }
 
     glfwMakeContextCurrent(window);
@@ -375,17 +431,19 @@ int main()
 
     cout << "Renderer: " << glGetString(GL_RENDERER) << "\n";
     cout << "OpenGL:   " << glGetString(GL_VERSION)  << "\n";
-    cout << "\n=== M6 - Trajetorias ===\n"
-         << "  WASD / Mouse    - Mover/rotacionar camera\n"
-         << "  Scroll          - Zoom (FOV)\n"
-         << "  TAB             - Selecionar proximo objeto\n"
-         << "  T/R/F           - Modo Translacao/Rotacao/Escala\n"
-         << "  P               - Adicionar waypoint na posicao atual do objeto\n"
-         << "  C               - Ligar/desligar trajetoria ciclica\n"
-         << "  BACKSPACE       - Remover ultimo waypoint do objeto\n"
-         << "  L               - Salvar waypoints em '" << TRAJ_FILENAME << "'\n"
-         << "  O               - Carregar waypoints de '" << TRAJ_FILENAME << "'\n"
-         << "  ESC             - Sair\n\n";
+    cout << "\n=== M6 - Bezier & 3-Point Lighting ===\n"
+         << "  WASD / Mouse   - Mover/rotacionar camera\n"
+         << "  Scroll         - Zoom (FOV)\n"
+         << "  TAB            - Selecionar proximo objeto\n"
+         << "  T / R / F      - Modo Translacao / Rotacao / Escala\n"
+         << "  M              - Ligar/desligar textura do objeto selecionado\n"
+         << "  1 / 2 / 3      - Ligar/desligar Luz Key / Fill / Back\n"
+         << "  P              - Adicionar ponto de controle Bezier\n"
+         << "  C              - Pausar/retomar trajetoria Bezier\n"
+         << "  BACKSPACE      - Remover ultimo ponto de controle\n"
+         << "  L              - Salvar pontos em '" << TRAJ_FILENAME << "'\n"
+         << "  O              - Carregar pontos de '" << TRAJ_FILENAME << "'\n"
+         << "  ESC            - Sair\n\n";
 
     int fbW, fbH;
     glfwGetFramebufferSize(window, &fbW, &fbH);
@@ -396,7 +454,10 @@ int main()
     glUniform1i(glGetUniformLocation(shader, "texBuff"), 0);
     glActiveTexture(GL_TEXTURE0);
 
-    // Programa e VAO/VBO dinâmico para desenhar waypoints (linhas + pontos)
+    // Carrega luzes iniciais
+    uploadLights(shader);
+
+    // VAO/VBO dinâmico para waypoints e curva Bézier
     GLuint lineShader = setupLineShader();
     GLint  lineViewLoc  = glGetUniformLocation(lineShader, "view");
     GLint  lineProjLoc  = glGetUniformLocation(lineShader, "projection");
@@ -407,19 +468,28 @@ int main()
     glGenBuffers(1, &lineVBO);
     glBindVertexArray(lineVAO);
     glBindBuffer(GL_ARRAY_BUFFER, lineVBO);
-    // alocação inicial vazia; será atualizada com glBufferData a cada frame
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(GLfloat), (GLvoid*)0);
     glEnableVertexAttribArray(0);
     glBindBuffer(GL_ARRAY_BUFFER, 0);
     glBindVertexArray(0);
 
-    glEnable(GL_PROGRAM_POINT_SIZE);  // permite gl_PointSize no vertex shader
+    glEnable(GL_PROGRAM_POINT_SIZE);
+
+    // VAO/VBO para o HUD 2D (stb_easy_font gera quads)
+    GLuint hudShader = setupHudShader();
+    GLuint hudVAO = 0, hudVBO = 0;
+    glGenVertexArrays(1, &hudVAO);
+    glGenBuffers(1, &hudVBO);
+    glBindVertexArray(hudVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, hudVBO);
+    // stride = 16 bytes (x,y,z float + rgba uint8x4); só usamos x,y (location 0)
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 16, (GLvoid*)0);
+    glEnableVertexAttribArray(0);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    glBindVertexArray(0);
 
     Camera camera(glm::vec3(0.0f, 2.0f, 7.0f));
     gCamera = &camera;
-
-    glm::vec3 lightPos(0.0f, 5.0f, 5.0f);
-    glUniform3fv(glGetUniformLocation(shader, "lightPos"), 1, glm::value_ptr(lightPos));
 
     // Lambda auxiliar para carregar um modelo
     auto addModel = [&](const string& file, const string& modelName,
@@ -438,13 +508,18 @@ int main()
         if (!texPath.empty())
         {
             m.texID = loadTexture(texPath);
-            if (m.texID)  cout << "Textura carregada: " << texPath << "\n";
-            else          cerr << "Falha ao carregar textura: " << texPath << "\n";
+            if (m.texID) cout << "Textura carregada: " << texPath << "\n";
+            else         cerr << "Falha ao carregar textura: " << texPath << "\n";
         }
         else
         {
             cout << "Sem textura para: " << modelName << " (usando cor solida)\n";
         }
+
+        cout << "  Ka=(" << m.mat.Ka.r << "," << m.mat.Ka.g << "," << m.mat.Ka.b << ")"
+             << "  Kd=(" << m.mat.Kd.r << "," << m.mat.Kd.g << "," << m.mat.Kd.b << ")"
+             << "  Ks=(" << m.mat.Ks.r << "," << m.mat.Ks.g << "," << m.mat.Ks.b << ")"
+             << "  Ns=" << m.mat.Ns << "\n";
 
         objects.push_back(m);
     };
@@ -460,10 +535,9 @@ int main()
         return -1;
     }
 
-    // Tenta carregar trajetórias salvas anteriormente
     loadTrajectories();
 
-    // Uniform locations
+    // Uniform locations (shader principal)
     GLint modelLoc      = glGetUniformLocation(shader, "model");
     GLint colorLoc      = glGetUniformLocation(shader, "objectColor");
     GLint useTextureLoc = glGetUniformLocation(shader, "useTexture");
@@ -496,9 +570,13 @@ int main()
         glm::mat4 view = camera.getViewMatrix();
         glm::mat4 proj = camera.getProjectionMatrix(aspect);
 
+        glUseProgram(shader);
         glUniformMatrix4fv(viewLoc,  1, GL_FALSE, glm::value_ptr(view));
         glUniformMatrix4fv(projLoc,  1, GL_FALSE, glm::value_ptr(proj));
         glUniform3fv(camPosLoc, 1, glm::value_ptr(camera.position));
+
+        // Atualiza posições das luzes no shader (caso mudem no futuro)
+        uploadLights(shader);
 
         // ── Trajetórias: avança todos os objetos que têm trajetória ativa ─
         for (auto& obj : objects)
@@ -525,14 +603,14 @@ int main()
             if (currentMode == MODE_SCALE)
             {
                 float delta = 0.0f;
-                if (keys[GLFW_KEY_RIGHT_BRACKET])                           delta =  SCALE_SPEED * dt;
-                if (keys[GLFW_KEY_LEFT_BRACKET] || keys[GLFW_KEY_MINUS])   delta = -SCALE_SPEED * dt;
+                if (keys[GLFW_KEY_RIGHT_BRACKET])                         delta =  SCALE_SPEED * dt;
+                if (keys[GLFW_KEY_LEFT_BRACKET] || keys[GLFW_KEY_MINUS]) delta = -SCALE_SPEED * dt;
                 if (delta != 0.0f)
                     sel.scale = glm::max(sel.scale + glm::vec3(delta), glm::vec3(SCALE_MIN));
             }
         }
 
-        // Rotação automática contínua para qualquer objeto com eixo ativo
+        // Rotação automática contínua
         for (auto& o : objects)
             if (o.rotX || o.rotY || o.rotZ)
                 o.rotAngle += ROT_SPEED * dt;
@@ -564,7 +642,9 @@ int main()
             glPolygonOffset(1.0f, 1.0f);
             glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
 
-            if (o.texID != 0)
+            // Decide se usa textura ou cor sólida
+            bool useTex = (o.texID != 0 && o.showTexture);
+            if (useTex)
             {
                 glUniform1i(useTextureLoc, 1);
                 glBindTexture(GL_TEXTURE_2D, o.texID);
@@ -579,7 +659,7 @@ int main()
             glDrawArrays(GL_TRIANGLES, 0, o.nVertices);
             glDisable(GL_POLYGON_OFFSET_FILL);
 
-            // Contorno do objeto selecionado
+            // Contorno branco no objeto selecionado
             if (selected)
             {
                 glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
@@ -593,9 +673,7 @@ int main()
             glBindVertexArray(0);
         }
 
-        // ── Desenho dos waypoints (linhas + pontos) ──────────────────────
-        // Para cada objeto com waypoints, traça o polígono cíclico e marca
-        // os pontos. Objeto selecionado em amarelo, demais em cinza claro.
+        // ── Visualização da curva Bézier e pontos de controle ────────────
         glUseProgram(lineShader);
         glUniformMatrix4fv(lineViewLoc, 1, GL_FALSE, glm::value_ptr(view));
         glUniformMatrix4fv(lineProjLoc, 1, GL_FALSE, glm::value_ptr(proj));
@@ -607,33 +685,67 @@ int main()
             const auto& wps = objects[i].traj.waypoints;
             if (wps.empty()) continue;
 
-            bool      isSel = ((int)i == activeObj);
-            glm::vec3 col   = isSel ? glm::vec3(1.0f, 0.85f, 0.1f)   // amarelo
-                                    : glm::vec3(0.6f, 0.6f, 0.7f);  // cinza azulado
-            glUniform3fv(lineColorLoc, 1, glm::value_ptr(col));
+            bool      isSel    = ((int)i == activeObj);
+            glm::vec3 curveCol = isSel ? glm::vec3(1.0f, 0.85f, 0.1f)  // amarelo
+                                       : glm::vec3(0.5f, 0.5f, 0.6f);  // cinza
+            glm::vec3 cageCol  = isSel ? glm::vec3(1.0f, 0.5f, 0.2f)   // laranja
+                                       : glm::vec3(0.3f, 0.3f, 0.4f);  // cinza escuro
+            glm::vec3 ptCol    = isSel ? glm::vec3(1.0f, 1.0f, 0.3f)   // amarelo claro
+                                       : glm::vec3(0.7f, 0.7f, 0.8f);
 
+            if (wps.size() >= 2)
+            {
+                // Amostra a curva de Bézier e desenha como LINE_LOOP
+                vector<glm::vec3> curvePoints;
+                curvePoints.reserve(BEZIER_SAMPLES);
+                for (int k = 0; k < BEZIER_SAMPLES; ++k)
+                    curvePoints.push_back(objects[i].traj.evalBezier((float)k / BEZIER_SAMPLES));
+
+                glBufferData(GL_ARRAY_BUFFER,
+                             curvePoints.size() * sizeof(glm::vec3),
+                             curvePoints.data(), GL_DYNAMIC_DRAW);
+                glUniform3fv(lineColorLoc, 1, glm::value_ptr(curveCol));
+                glDrawArrays(GL_LINE_LOOP, 0, BEZIER_SAMPLES);
+
+                // Polígono de controle (cage) em cor mais suave
+                glBufferData(GL_ARRAY_BUFFER,
+                             wps.size() * sizeof(glm::vec3),
+                             wps.data(), GL_DYNAMIC_DRAW);
+                glUniform3fv(lineColorLoc, 1, glm::value_ptr(cageCol));
+                glDrawArrays(GL_LINE_STRIP, 0, (GLsizei)wps.size());
+            }
+            else
+            {
+                // Apenas 1 ponto: carrega mesmo assim para desenhar o ponto
+                glBufferData(GL_ARRAY_BUFFER,
+                             wps.size() * sizeof(glm::vec3),
+                             wps.data(), GL_DYNAMIC_DRAW);
+            }
+
+            // Pontos de controle por cima
             glBufferData(GL_ARRAY_BUFFER,
                          wps.size() * sizeof(glm::vec3),
                          wps.data(), GL_DYNAMIC_DRAW);
-
-            // Linhas conectando os pontos (LINE_LOOP fecha o ciclo)
-            if (wps.size() >= 2)
-                glDrawArrays(GL_LINE_LOOP, 0, (GLsizei)wps.size());
-
-            // Pontos por cima das linhas
+            glUniform3fv(lineColorLoc, 1, glm::value_ptr(ptCol));
             glDrawArrays(GL_POINTS, 0, (GLsizei)wps.size());
         }
+
         glBindBuffer(GL_ARRAY_BUFFER, 0);
         glBindVertexArray(0);
-        glUseProgram(shader);  // restaura o shader principal
+
+        // ── HUD de ajuda ──────────────────────────────────────────────────
+        drawHUD(hudShader, hudVAO, hudVBO);
 
         glfwSwapBuffers(window);
     }
 
-    // Limpeza dos recursos de linha
     glDeleteBuffers(1, &lineVBO);
     glDeleteVertexArrays(1, &lineVAO);
     glDeleteProgram(lineShader);
+
+    glDeleteBuffers(1, &hudVBO);
+    glDeleteVertexArrays(1, &hudVAO);
+    glDeleteProgram(hudShader);
 
     glfwTerminate();
     return 0;
@@ -657,6 +769,13 @@ void key_callback(GLFWwindow* window, int key, int scancode, int action, int mod
     }
 
     if (action != GLFW_PRESS) return;
+
+    // ── Toggle HUD ───────────────────────────────────────────────────────
+    if (key == GLFW_KEY_H)
+    {
+        showHelp = !showHelp;
+        return;
+    }
 
     // ── Seleção ──────────────────────────────────────────────────────────
     if (key == GLFW_KEY_TAB)
@@ -693,15 +812,47 @@ void key_callback(GLFWwindow* window, int key, int scancode, int action, int mod
         if (key == GLFW_KEY_Z) { obj.rotZ = !obj.rotZ; if (obj.rotZ) { obj.rotX = obj.rotY = false; } }
     }
 
+    // ── Toggle de textura (M) ────────────────────────────────────────────
+    if (key == GLFW_KEY_M)
+    {
+        OBJModel& obj = objects[activeObj];
+        if (obj.texID == 0)
+        {
+            cout << "[Textura] '" << obj.name << "' nao tem textura.\n";
+            return;
+        }
+        obj.showTexture = !obj.showTexture;
+        cout << "[Textura] '" << obj.name
+             << "' textura " << (obj.showTexture ? "LIGADA" : "DESLIGADA")
+             << "  Ka=(" << obj.mat.Ka.r << "," << obj.mat.Ka.g << "," << obj.mat.Ka.b << ")"
+             << "  Kd=(" << obj.mat.Kd.r << "," << obj.mat.Kd.g << "," << obj.mat.Kd.b << ")"
+             << "  Ks=(" << obj.mat.Ks.r << "," << obj.mat.Ks.g << "," << obj.mat.Ks.b << ")"
+             << "  Ns=" << obj.mat.Ns << "\n";
+        updateWindowTitle(window);
+        return;
+    }
+
+    // ── Toggle de iluminação (1 / 2 / 3) ────────────────────────────────
+    if (key == GLFW_KEY_1 || key == GLFW_KEY_2 || key == GLFW_KEY_3)
+    {
+        int idx = (key == GLFW_KEY_1) ? 0 : (key == GLFW_KEY_2) ? 1 : 2;
+        lights[idx].on = !lights[idx].on;
+        cout << "[Luz] " << lights[idx].name
+             << " " << (lights[idx].on ? "LIGADA" : "DESLIGADA") << "\n";
+        updateWindowTitle(window);
+        return;
+    }
+
     // ── Trajetória ───────────────────────────────────────────────────────
 
-    // P – adiciona waypoint na posição atual
+    // P – adiciona ponto de controle na posição atual
     if (key == GLFW_KEY_P)
     {
         OBJModel& obj = objects[activeObj];
         obj.traj.waypoints.push_back(obj.position);
+        obj.traj.dirty = true;
         int n = (int)obj.traj.waypoints.size();
-        cout << "[Trajetoria] Waypoint " << n << " adicionado para '"
+        cout << "[Bezier] Ponto de controle " << n << " adicionado para '"
              << obj.name << "': ("
              << obj.position.x << ", "
              << obj.position.y << ", "
@@ -710,77 +861,56 @@ void key_callback(GLFWwindow* window, int key, int scancode, int action, int mod
         return;
     }
 
-    // C – liga/desliga seguir trajetória
+    // C – pausar/retomar trajetória (NÃO reinicia t)
     if (key == GLFW_KEY_C)
     {
         OBJModel& obj = objects[activeObj];
         if (obj.traj.waypoints.size() < 2)
         {
-            cout << "[Trajetoria] Adicione pelo menos 2 waypoints antes de ligar a trajetoria.\n";
+            cout << "[Bezier] Adicione pelo menos 2 pontos de controle antes de ligar.\n";
             return;
         }
         obj.traj.active = !obj.traj.active;
 
-        // Ao ligar, reinicia no primeiro waypoint
-        if (obj.traj.active)
-        {
-            obj.traj.currentSeg = 0;
-            obj.traj.t          = 0.0f;
-            obj.position        = obj.traj.waypoints[0];
-        }
-        cout << "[Trajetoria] " << obj.name
-             << " – trajetoria " << (obj.traj.active ? "LIGADA" : "DESLIGADA")
-             << " (" << obj.traj.waypoints.size() << " waypoints)\n";
+        cout << "[Bezier] '" << obj.name
+             << "' trajetoria " << (obj.traj.active ? "RETOMADA" : "PAUSADA")
+             << " (t=" << obj.traj.t
+             << ", " << obj.traj.waypoints.size() << " pontos)\n";
         updateWindowTitle(window);
         return;
     }
 
-    // BACKSPACE – remove último waypoint
+    // BACKSPACE – remove último ponto de controle
     if (key == GLFW_KEY_BACKSPACE)
     {
         OBJModel& obj = objects[activeObj];
         if (!obj.traj.waypoints.empty())
         {
             obj.traj.waypoints.pop_back();
-            // Trajetória precisa de pelo menos 2 waypoints — desliga caso contrário
+            obj.traj.dirty = true;
             if (obj.traj.waypoints.size() < 2)
             {
                 if (obj.traj.active)
-                    cout << "[Trajetoria] " << obj.name
-                         << " – trajetoria DESLIGADA (waypoints insuficientes)\n";
-                obj.traj.active     = false;
-                obj.traj.currentSeg = 0;
-                obj.traj.t          = 0.0f;
+                    cout << "[Bezier] '" << obj.name
+                         << "' trajetoria PAUSADA (pontos insuficientes)\n";
+                obj.traj.active = false;
             }
-            else
-            {
-                // Garante que currentSeg seja válido
-                obj.traj.currentSeg = obj.traj.currentSeg % (int)obj.traj.waypoints.size();
-            }
-            cout << "[Trajetoria] Ultimo waypoint removido de '"
+            cout << "[Bezier] Ponto removido de '"
                  << obj.name << "'. Restam: " << obj.traj.waypoints.size() << "\n";
         }
         else
         {
-            cout << "[Trajetoria] Nenhum waypoint para remover.\n";
+            cout << "[Bezier] Nenhum ponto para remover.\n";
         }
         updateWindowTitle(window);
         return;
     }
 
-    // L – salvar waypoints
-    if (key == GLFW_KEY_L)
-    {
-        saveTrajectories();
-        return;
-    }
+    // L – salvar pontos de controle
+    if (key == GLFW_KEY_L) { saveTrajectories(); return; }
 
-    // O – carregar waypoints
-    if (key == GLFW_KEY_O)
-    {
-        loadTrajectories();
-        return;
-    }
+    // O – carregar pontos de controle
+    if (key == GLFW_KEY_O) { loadTrajectories(); return; }
 }
 
 void mouse_callback(GLFWwindow* window, double xpos, double ypos)
@@ -794,14 +924,29 @@ void scroll_callback(GLFWwindow* window, double xoffset, double yoffset)
 }
 
 
+// ─── Upload de luzes para o shader ───────────────────────────────────────────
+
+void uploadLights(GLuint shader)
+{
+    glUseProgram(shader);
+    for (int i = 0; i < 3; ++i)
+    {
+        string base = "lightPos[" + to_string(i) + "]";
+        string colBase = "lightColor[" + to_string(i) + "]";
+        string onBase  = "lightOn["    + to_string(i) + "]";
+
+        glUniform3fv(glGetUniformLocation(shader, base.c_str()),    1, glm::value_ptr(lights[i].pos));
+        glUniform3fv(glGetUniformLocation(shader, colBase.c_str()), 1, glm::value_ptr(lights[i].color));
+        glUniform1i (glGetUniformLocation(shader, onBase.c_str()),  lights[i].on ? 1 : 0);
+    }
+}
+
+
 // ─── Trajetórias: salvar / carregar ──────────────────────────────────────────
 /*
- Formato do arquivo trajectories.txt:
+ Formato trajectories.txt:
    object <nome>
    waypoint <x> <y> <z>
-   waypoint <x> <y> <z>
-   ...
-   object <nome>
    ...
 */
 
@@ -810,20 +955,19 @@ void saveTrajectories()
     ofstream f(TRAJ_FILENAME);
     if (!f.is_open()) { cerr << "Erro ao salvar " << TRAJ_FILENAME << "\n"; return; }
 
-    // Precisão alta para round-trip exato de save/load
-    f << std::setprecision(9);
+    f << fixed << setprecision(9);
 
     int saved = 0;
     for (const auto& obj : objects)
     {
-        if (obj.traj.waypoints.empty()) continue;  // não polui o arquivo
+        if (obj.traj.waypoints.empty()) continue;
         f << "object " << obj.name << "\n";
         for (const auto& wp : obj.traj.waypoints)
             f << "waypoint " << wp.x << " " << wp.y << " " << wp.z << "\n";
         ++saved;
     }
     f.close();
-    cout << "[Trajetoria] Waypoints salvos em '" << TRAJ_FILENAME
+    cout << "[Bezier] Pontos salvos em '" << TRAJ_FILENAME
          << "' (" << saved << " objeto(s))\n";
 }
 
@@ -832,20 +976,18 @@ void loadTrajectories()
     ifstream f(TRAJ_FILENAME);
     if (!f.is_open())
     {
-        cout << "[Trajetoria] Arquivo '" << TRAJ_FILENAME << "' nao encontrado.\n";
+        cout << "[Bezier] Arquivo '" << TRAJ_FILENAME << "' nao encontrado.\n";
         return;
     }
 
-    cout << "[Trajetoria] Carregando '" << TRAJ_FILENAME
-         << "' (waypoints atuais serao substituidos)...\n";
+    cout << "[Bezier] Carregando '" << TRAJ_FILENAME << "'...\n";
 
-    // Limpa waypoints existentes e desativa qualquer trajetória em execução
     for (auto& obj : objects)
     {
         obj.traj.waypoints.clear();
-        obj.traj.active     = false;
-        obj.traj.currentSeg = 0;
-        obj.traj.t          = 0.0f;
+        obj.traj.active = false;
+        obj.traj.t      = 0.0f;
+        obj.traj.dirty  = true;
     }
 
     OBJModel* current = nullptr;
@@ -863,7 +1005,7 @@ void loadTrajectories()
             for (auto& obj : objects)
                 if (obj.name == name) { current = &obj; break; }
             if (!current)
-                cerr << "[Trajetoria] Objeto '" << name << "' nao encontrado na cena.\n";
+                cerr << "[Bezier] Objeto '" << name << "' nao encontrado.\n";
         }
         else if (word == "waypoint" && current)
         {
@@ -873,9 +1015,9 @@ void loadTrajectories()
         }
     }
     f.close();
-    cout << "[Trajetoria] Waypoints carregados de '" << TRAJ_FILENAME << "'\n";
+
     for (const auto& obj : objects)
-        cout << "  " << obj.name << ": " << obj.traj.waypoints.size() << " waypoints\n";
+        cout << "  " << obj.name << ": " << obj.traj.waypoints.size() << " pontos\n";
 }
 
 
@@ -886,28 +1028,39 @@ void updateWindowTitle(GLFWwindow* window)
     string modeStr;
     switch (currentMode)
     {
-        case MODE_TRANSLATE: modeStr = "Translacao (Setas/I/K)"; break;
-        case MODE_ROTATE:    modeStr = "Rotacao (X/Y/Z)";        break;
-        case MODE_SCALE:     modeStr = "Escala (]/[)";           break;
+        case MODE_TRANSLATE: modeStr = "Trans(Setas/I/K)"; break;
+        case MODE_ROTATE:    modeStr = "Rot(X/Y/Z)";       break;
+        case MODE_SCALE:     modeStr = "Escala(]/[)";       break;
     }
 
     const OBJModel& obj = objects[activeObj];
+
+    string texStr = (obj.texID == 0) ? " [noTex]" :
+                    (obj.showTexture ? " [Tex:ON]" : " [Tex:OFF]");
+
     string trajInfo;
     if (obj.traj.active)
-        trajInfo = " [TRAJ:ON wp=" + to_string(obj.traj.waypoints.size()) + "]";
+        trajInfo = " [BEZ:ON n=" + to_string(obj.traj.waypoints.size()) + "]";
     else if (!obj.traj.waypoints.empty())
-        trajInfo = " [wp=" + to_string(obj.traj.waypoints.size()) + "]";
+        trajInfo = " [n=" + to_string(obj.traj.waypoints.size()) + "]";
+
+    // Status das luzes: K=key F=fill B=back
+    string lightStr = " | ";
+    lightStr += lights[0].on ? "K" : "k";
+    lightStr += lights[1].on ? "F" : "f";
+    lightStr += lights[2].on ? "B" : "b";
 
     string title = "M6 | " + obj.name
                  + "  [" + to_string(activeObj + 1) + "/" + to_string(objects.size()) + "]"
-                 + "  Modo: " + modeStr
-                 + trajInfo
-                 + "  | P=add C=toggle L=save O=load";
+                 + "  " + modeStr
+                 + texStr + trajInfo
+                 + lightStr
+                 + "  | M=tex 1/2/3=luz P=add C=play/pause";
     glfwSetWindowTitle(window, title.c_str());
 }
 
 
-// ─── Setup do shader ─────────────────────────────────────────────────────────
+// ─── Setup dos shaders ────────────────────────────────────────────────────────
 
 GLuint setupShader()
 {
@@ -1020,6 +1173,288 @@ GLuint loadTexture(const string& filePath)
 }
 
 
+// ─── HUD de ajuda (stb_easy_font) ────────────────────────────────────────────
+
+GLuint setupHudShader()
+{
+    auto compile = [](GLenum type, const GLchar* src) -> GLuint
+    {
+        GLuint s = glCreateShader(type);
+        glShaderSource(s, 1, &src, NULL);
+        glCompileShader(s);
+        GLint ok; glGetShaderiv(s, GL_COMPILE_STATUS, &ok);
+        if (!ok) { char log[512]; glGetShaderInfoLog(s, 512, NULL, log); cerr << "HUD shader: " << log << "\n"; }
+        return s;
+    };
+    GLuint vs = compile(GL_VERTEX_SHADER,   hudVertexShaderSource);
+    GLuint fs = compile(GL_FRAGMENT_SHADER, hudFragmentShaderSource);
+    GLuint prog = glCreateProgram();
+    glAttachShader(prog, vs); glAttachShader(prog, fs);
+    glLinkProgram(prog);
+    glDeleteShader(vs); glDeleteShader(fs);
+    return prog;
+}
+
+// Desenha uma linha de texto usando stb_easy_font.
+// vbo e vao devem já ter sido configurados com stride=16, attrib 0 = vec2.
+static void hudText(GLuint vbo, float px, float py, float scale, const char* text)
+{
+    static char buf[99999];
+    int nq = stb_easy_font_print(0, 0, const_cast<char*>(text), NULL, buf, sizeof(buf));
+
+    // stb_easy_font gera quads (4 verts cada, stride 16 bytes: x,y,z,rgba).
+    // Construímos um vector<float> xy-only escalado e posicionado.
+    int nv = nq * 4;
+    vector<float> verts;
+    verts.reserve(nv * 2);
+    for (int i = 0; i < nv; ++i)
+    {
+        float* v = reinterpret_cast<float*>(buf + i * 16);
+        verts.push_back(px + v[0] * scale);
+        verts.push_back(py + v[1] * scale);
+    }
+
+    // Cria índices para converter quads em triângulos (2 por quad)
+    vector<unsigned int> idx;
+    idx.reserve(nq * 6);
+    for (int q = 0; q < nq; ++q)
+    {
+        unsigned int b = q * 4;
+        idx.push_back(b+0); idx.push_back(b+1); idx.push_back(b+2);
+        idx.push_back(b+0); idx.push_back(b+2); idx.push_back(b+3);
+    }
+
+    // VBO para xy
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER, verts.size() * sizeof(float), verts.data(), GL_DYNAMIC_DRAW);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+
+    // IBO temporário
+    GLuint ibo;
+    glGenBuffers(1, &ibo);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ibo);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, idx.size() * sizeof(unsigned int), idx.data(), GL_DYNAMIC_DRAW);
+
+    glDrawElements(GL_TRIANGLES, (GLsizei)idx.size(), GL_UNSIGNED_INT, 0);
+
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+    glDeleteBuffers(1, &ibo);
+}
+
+void drawHUD(GLuint hudShader, GLuint hudVAO, GLuint hudVBO)
+{
+    // Projeção ortogonal: pixel (0,0) = canto sup-esq, y cresce pra baixo
+    glm::mat4 ortho = glm::ortho(0.0f, (float)WIDTH, (float)HEIGHT, 0.0f, -1.0f, 1.0f);
+
+    glDisable(GL_DEPTH_TEST);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+    glUseProgram(hudShader);
+    GLint orthoLoc = glGetUniformLocation(hudShader, "ortho");
+    GLint colLoc   = glGetUniformLocation(hudShader, "hudColor");
+    glUniformMatrix4fv(orthoLoc, 1, GL_FALSE, glm::value_ptr(ortho));
+
+    glBindVertexArray(hudVAO);
+
+    // ── Painel de fundo semi-transparente ────────────────────────────────
+    // Sempre visível: barra de status no topo
+    {
+        // Fundo escuro da barra de status
+        const OBJModel& obj = objects[activeObj];
+        string modeStr = (currentMode == MODE_TRANSLATE) ? "TRANS" :
+                         (currentMode == MODE_ROTATE)    ? "ROT"   : "SCALE";
+        string texState = (obj.texID == 0) ? "no-tex" : (obj.showTexture ? "tex:ON" : "tex:OFF");
+        string trajState = obj.traj.active ? "BEZIER:ON" :
+                           (!obj.traj.waypoints.empty() ?
+                            "pts:" + to_string(obj.traj.waypoints.size()) : "no-pts");
+        string lights_s = string("Luz:") +
+                          (lights[0].on ? "K" : "k") +
+                          (lights[1].on ? "F" : "f") +
+                          (lights[2].on ? "B" : "b");
+
+        string statusLine = "  [" + to_string(activeObj+1) + "/" + to_string(objects.size()) + "] "
+                          + obj.name + "  |  Modo:" + modeStr
+                          + "  " + texState
+                          + "  " + trajState
+                          + "  " + lights_s
+                          + "  |  H=ajuda";
+
+        // Fundo da barra de status
+        float bh = 22.0f;
+        float barVerts[] = { 0,0, (float)WIDTH,0, (float)WIDTH,bh, 0,0, (float)WIDTH,bh, 0,bh };
+        glUniform4f(colLoc, 0.0f, 0.0f, 0.0f, 0.65f);
+        glBindBuffer(GL_ARRAY_BUFFER, hudVBO);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(barVerts), barVerts, GL_DYNAMIC_DRAW);
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+        glDrawArrays(GL_TRIANGLES, 0, 6);
+
+        glUniform4f(colLoc, 0.85f, 0.90f, 1.0f, 1.0f);
+        hudText(hudVBO, 6.0f, 5.0f, 1.5f, statusLine.c_str());
+    }
+
+    // ── Painel completo de ajuda (visível quando showHelp == true) ───────
+    if (showHelp)
+    {
+        // Estrutura de seções e entradas do painel
+        struct Entry { const char* key; const char* desc; };
+        struct Section { const char* title; vector<Entry> entries; };
+
+        vector<Section> sections = {
+            { "CAMERA",  {
+                { "W / S",       "Mover frente / tras"       },
+                { "A / D",       "Mover esquerda / direita"  },
+                { "Mouse",       "Rotacionar (yaw / pitch)"  },
+                { "Scroll",      "Zoom (FOV)"                },
+            }},
+            { "SELECAO & TRANSFORM", {
+                { "TAB",         "Proximo objeto"            },
+                { "T",           "Modo Translacao"           },
+                { "  Setas",     "Mover X / Z"               },
+                { "  I / K",     "Mover Y cima / baixo"      },
+                { "R",           "Modo Rotacao"              },
+                { "  X / Y / Z", "Ativar eixo de rotacao"    },
+                { "F",           "Modo Escala uniforme"      },
+                { "  ] / [",     "Aumentar / diminuir"       },
+            }},
+            { "TEXTURA & MATERIAL", {
+                { "M",           "Ligar/desligar textura"    },
+                { "",            "(mostra Ka Kd Ks Ns)"      },
+            }},
+            { "ILUMINACAO (Phong 3-pts)", {
+                { "1",           "Luz Key   (principal)"     },
+                { "2",           "Luz Fill  (preenchimento)" },
+                { "3",           "Luz Back  (contraluz)"     },
+            }},
+            { "TRAJETORIA BEZIER", {
+                { "P",           "Add ponto de controle"     },
+                { "C",           "Play / Pause trajetoria"   },
+                { "BACKSPACE",   "Remover ultimo ponto"      },
+                { "L",           "Salvar em trajectories.txt"},
+                { "O",           "Carregar trajectories.txt" },
+            }},
+            { "GERAL", {
+                { "H",           "Mostrar / ocultar ajuda"   },
+                { "ESC",         "Sair"                      },
+            }},
+        };
+
+        // Calcula dimensões do painel
+        const float SCALE   = 1.5f;
+        const float LHEIGHT = 13.0f * SCALE;  // altura de uma linha
+        const float SHEIGHT = 17.0f * SCALE;  // altura do cabeçalho de secao
+        const float PAD     = 10.0f;
+        const float COL_KEY = 110.0f;
+        const float COL_DESC= 260.0f;
+
+        int totalLines = 0;
+        for (auto& s : sections) totalLines += 1 + (int)s.entries.size();
+        float panelH = PAD + totalLines * LHEIGHT + sections.size() * (SHEIGHT - LHEIGHT) + PAD;
+        float panelW = PAD + COL_KEY + COL_DESC + PAD;
+        float px = (float)WIDTH  - panelW - 12.0f;
+        float py = 28.0f;  // abaixo da barra de status
+
+        // Sombra
+        {
+            float sx = px + 4, sy = py + 4;
+            float sv[] = { sx,sy, sx+panelW,sy, sx+panelW,sy+panelH,
+                           sx,sy, sx+panelW,sy+panelH, sx,sy+panelH };
+            glUniform4f(colLoc, 0.0f, 0.0f, 0.0f, 0.45f);
+            glBindBuffer(GL_ARRAY_BUFFER, hudVBO);
+            glBufferData(GL_ARRAY_BUFFER, sizeof(sv), sv, GL_DYNAMIC_DRAW);
+            glBindBuffer(GL_ARRAY_BUFFER, 0);
+            glDrawArrays(GL_TRIANGLES, 0, 6);
+        }
+
+        // Fundo do painel
+        {
+            float bv[] = { px,py, px+panelW,py, px+panelW,py+panelH,
+                           px,py, px+panelW,py+panelH, px,py+panelH };
+            glUniform4f(colLoc, 0.05f, 0.07f, 0.12f, 0.88f);
+            glBindBuffer(GL_ARRAY_BUFFER, hudVBO);
+            glBufferData(GL_ARRAY_BUFFER, sizeof(bv), bv, GL_DYNAMIC_DRAW);
+            glBindBuffer(GL_ARRAY_BUFFER, 0);
+            glDrawArrays(GL_TRIANGLES, 0, 6);
+        }
+
+        // Borda do painel (4 retângulos finos de 2px)
+        {
+            float t = 2.0f;
+            float borders[][12] = {
+                { px,py, px+panelW,py, px+panelW,py+t,  px,py, px+panelW,py+t, px,py+t },  // top
+                { px,py+panelH-t, px+panelW,py+panelH-t, px+panelW,py+panelH, px,py+panelH-t, px+panelW,py+panelH, px,py+panelH }, // bot
+                { px,py, px+t,py, px+t,py+panelH, px,py, px+t,py+panelH, px,py+panelH },  // left
+                { px+panelW-t,py, px+panelW,py, px+panelW,py+panelH, px+panelW-t,py, px+panelW,py+panelH, px+panelW-t,py+panelH }, // right
+            };
+            glUniform4f(colLoc, 0.3f, 0.5f, 0.9f, 0.9f);
+            for (auto& b : borders)
+            {
+                glBindBuffer(GL_ARRAY_BUFFER, hudVBO);
+                glBufferData(GL_ARRAY_BUFFER, sizeof(b), b, GL_DYNAMIC_DRAW);
+                glBindBuffer(GL_ARRAY_BUFFER, 0);
+                glDrawArrays(GL_TRIANGLES, 0, 6);
+            }
+        }
+
+        // Título do painel
+        float cy = py + PAD;
+        glUniform4f(colLoc, 1.0f, 1.0f, 1.0f, 1.0f);
+        hudText(hudVBO, px + PAD, cy, SCALE, "CONTROLES  (H = fechar)");
+        cy += SHEIGHT * 1.1f;
+
+        // Linha separadora
+        {
+            float sep[] = { px+PAD, cy, px+panelW-PAD, cy, px+panelW-PAD, cy+1.5f,
+                            px+PAD, cy, px+panelW-PAD, cy+1.5f, px+PAD, cy+1.5f };
+            glUniform4f(colLoc, 0.3f, 0.5f, 0.9f, 0.7f);
+            glBindBuffer(GL_ARRAY_BUFFER, hudVBO);
+            glBufferData(GL_ARRAY_BUFFER, sizeof(sep), sep, GL_DYNAMIC_DRAW);
+            glBindBuffer(GL_ARRAY_BUFFER, 0);
+            glDrawArrays(GL_TRIANGLES, 0, 6);
+        }
+        cy += 6.0f;
+
+        // Conteúdo das seções
+        for (const auto& sec : sections)
+        {
+            // Cabeçalho de seção — fundo levemente destacado
+            {
+                float sh = SHEIGHT;
+                float sv[] = { px+PAD-2,cy-2, px+panelW-PAD+2,cy-2, px+panelW-PAD+2,cy+sh-2,
+                               px+PAD-2,cy-2, px+panelW-PAD+2,cy+sh-2, px+PAD-2,cy+sh-2 };
+                glUniform4f(colLoc, 0.15f, 0.20f, 0.35f, 0.80f);
+                glBindBuffer(GL_ARRAY_BUFFER, hudVBO);
+                glBufferData(GL_ARRAY_BUFFER, sizeof(sv), sv, GL_DYNAMIC_DRAW);
+                glBindBuffer(GL_ARRAY_BUFFER, 0);
+                glDrawArrays(GL_TRIANGLES, 0, 6);
+            }
+            glUniform4f(colLoc, 0.55f, 0.80f, 1.00f, 1.0f);
+            hudText(hudVBO, px + PAD + 2, cy, SCALE, sec.title);
+            cy += SHEIGHT;
+
+            // Entradas
+            for (const auto& e : sec.entries)
+            {
+                if (e.key[0] != '\0')
+                {
+                    // Tecla em amarelo
+                    glUniform4f(colLoc, 1.0f, 0.88f, 0.30f, 1.0f);
+                    hudText(hudVBO, px + PAD + 4, cy, SCALE, e.key);
+                }
+                // Descrição em branco suave
+                glUniform4f(colLoc, 0.85f, 0.88f, 0.92f, 1.0f);
+                hudText(hudVBO, px + PAD + COL_KEY, cy, SCALE, e.desc);
+                cy += LHEIGHT;
+            }
+        }
+    }
+
+    glBindVertexArray(0);
+    glDisable(GL_BLEND);
+    glEnable(GL_DEPTH_TEST);
+}
+
+
 // ─── Carregamento de OBJ ─────────────────────────────────────────────────────
 
 int loadSimpleOBJ(const string& filePath, int& nVertices, string& texturePath, Material& mat)
@@ -1050,9 +1485,6 @@ int loadSimpleOBJ(const string& filePath, int& nVertices, string& texturePath, M
         else if (word == "vn") { glm::vec3 vn; ss >> vn.x >> vn.y >> vn.z; normals.push_back(vn); }
         else if (word == "f")
         {
-            // Coleta todos os vértices da face primeiro (pode ser triângulo,
-            // quad ou n-gon) e depois faz fan-triangulation: (0,1,2)(0,2,3)...
-            // Também trata índices negativos do OBJ (relativos ao fim).
             struct FaceIdx { int v, t, n; };
             vector<FaceIdx> face;
 
@@ -1061,9 +1493,9 @@ int loadSimpleOBJ(const string& filePath, int& nVertices, string& texturePath, M
                 if (s.empty()) return -1;
                 int v;
                 try { v = stoi(s); } catch (...) { return -1; }
-                if (v > 0)        return v - 1;        // 1-based -> 0-based
-                else if (v < 0)   return listSize + v; // -1 -> último
-                else              return -1;           // índice 0 inválido em OBJ
+                if (v > 0)      return v - 1;
+                else if (v < 0) return listSize + v;
+                else            return -1;
             };
 
             while (ss >> word)
@@ -1077,7 +1509,6 @@ int loadSimpleOBJ(const string& filePath, int& nVertices, string& texturePath, M
                 face.push_back(fi);
             }
 
-            // Empurra um vértice (com pos/tex/normal) ao vBuffer
             auto pushVert = [&](const FaceIdx& fi)
             {
                 if (fi.v >= 0 && fi.v < (int)positions.size())
@@ -1086,10 +1517,7 @@ int loadSimpleOBJ(const string& filePath, int& nVertices, string& texturePath, M
                     vBuffer.push_back(positions[fi.v].y);
                     vBuffer.push_back(positions[fi.v].z);
                 }
-                else
-                {
-                    vBuffer.push_back(0.0f); vBuffer.push_back(0.0f); vBuffer.push_back(0.0f);
-                }
+                else { vBuffer.push_back(0.0f); vBuffer.push_back(0.0f); vBuffer.push_back(0.0f); }
 
                 if (fi.t >= 0 && fi.t < (int)texCoords.size())
                     { vBuffer.push_back(texCoords[fi.t].s); vBuffer.push_back(texCoords[fi.t].t); }
@@ -1102,7 +1530,6 @@ int loadSimpleOBJ(const string& filePath, int& nVertices, string& texturePath, M
                     { vBuffer.push_back(0.0f); vBuffer.push_back(1.0f); vBuffer.push_back(0.0f); }
             };
 
-            // Fan triangulation: (0,1,2), (0,2,3), (0,3,4) ...
             for (size_t k = 1; k + 1 < face.size(); ++k)
             {
                 pushVert(face[0]);
