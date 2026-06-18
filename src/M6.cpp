@@ -1,34 +1,12 @@
-/*
- M6 - Trajetórias Bézier para Objetos 3D
-
- Controles de câmera:
-   WASD       - Mover câmera (frente/esq/atrás/dir)
-   Mouse      - Rotacionar câmera (yaw/pitch)
-   Scroll     - Zoom (FOV)
-
- Seleção e transformação:
-   TAB        - Selecionar próximo objeto
-   T          - Modo Translação manual (Setas / I·K)
-   R          - Modo Rotação  (X/Y/Z para eixo)
-   F          - Modo Escala   (]/[ escala uniforme)
-
- Material e textura:
-   M          - Ligar/desligar textura do objeto selecionado
-
- Iluminação (3 pontos):
-   1          - Ligar/desligar Luz Key   (principal)
-   2          - Ligar/desligar Luz Fill  (preenchimento)
-   3          - Ligar/desligar Luz Back  (contraluz)
-
- Trajetória (curva de Bézier):
-   P          - Adicionar posição atual como ponto de controle
-   C          - Pausar/retomar trajetória (Bézier cíclica)
-   BACKSPACE  - Remover último ponto de controle
-   L          - Salvar pontos em arquivo  (trajectories.txt)
-   O          - Carregar pontos de arquivo (trajectories.txt)
-
- ESC - Sair
-*/
+// M6 - trajetorias bezier
+// camera: WASD + mouse + scroll
+// TAB pra trocar objeto, T/R/F = translacao/rotacao/escala
+// X Y Z escolhe o eixo da rotacao
+// M liga/desliga textura
+// 1 2 3 ligam/desligam as 3 luzes (key, fill, back)
+// P = adiciona ponto na curva, C = play/pause, BACKSPACE remove ultimo
+// L salva, O carrega trajectories.txt
+// H mostra/esconde ajuda, ESC sai
 
 #include <iostream>
 #include <fstream>
@@ -67,14 +45,14 @@ const float TRANSLATE_SPEED = 2.5f;
 const float SCALE_SPEED     = 1.0f;
 const float ROT_SPEED       = 1.5f;
 const float SCALE_MIN       = 0.05f;
-const float TRAJ_SPEED      = 1.5f;   // t/segundo (normalizado pelo comprimento de arco)
+const float TRAJ_SPEED      = 1.5f;   // velocidade ao longo da curva
 
-const int BEZIER_SAMPLES = 64;  // amostras para visualizar a curva
+const int BEZIER_SAMPLES = 64;  // qtas amostras pra desenhar a curva
 
 
 // ─── Shaders ─────────────────────────────────────────────────────────────────
 
-// Shader principal: Phong com 3 fontes de luz
+// shader principal (phong com 3 luzes)
 const GLchar* vertexShaderSource = R"glsl(
 #version 450
 layout(location = 0) in vec3 position;
@@ -99,7 +77,7 @@ void main()
 }
 )glsl";
 
-// Iluminação Phong com 3 fontes independentes (key / fill / back)
+// fragment shader - phong com 3 luzes (key/fill/back)
 const GLchar* fragmentShaderSource = R"glsl(
 #version 450
 in vec2 texCoord;
@@ -117,7 +95,7 @@ uniform vec3  Kd;
 uniform vec3  Ks;
 uniform float Ns;
 
-// 3-point lighting
+// 3 luzes
 uniform vec3 lightPos[3];
 uniform vec3 lightColor[3];
 uniform int  lightOn[3];
@@ -131,10 +109,10 @@ void main()
     vec3 N = normalize(vNormal);
     vec3 V = normalize(camPos - fragPos);
 
-    // Ambient global (modulado por Ka)
+    // ambient
     vec3 result = Ka * vec3(0.25) * baseColor;
 
-    // Contribuição de cada fonte de luz ativa
+    // soma cada luz que estiver ligada
     for (int i = 0; i < 3; ++i)
     {
         if (lightOn[i] == 0) continue;
@@ -154,9 +132,8 @@ void main()
 }
 )glsl";
 
-// ─── Shaders 2D para o overlay HUD ───────────────────────────────────────────
-// Coordenadas em pixels (0,0 = canto superior esquerdo).
-// A projeção ortogonal é enviada como uniform.
+// ─── Shaders 2D do HUD ───────────────────────────────────────────────────────
+// coords em pixels, (0,0) = canto sup esq. matriz ortho vem como uniform.
 const GLchar* hudVertexShaderSource = R"glsl(
 #version 450
 layout(location = 0) in vec2 pos;
@@ -171,7 +148,7 @@ out vec4 color;
 void main() { color = hudColor; }
 )glsl";
 
-// Shader minimalista para waypoints/curva Bézier
+// shader simples pros pontos e curva
 const GLchar* lineVertexShaderSource = R"glsl(
 #version 450
 layout(location = 0) in vec3 position;
@@ -291,18 +268,18 @@ struct LightSource
     string    name;
 };
 
-// Trajetória de Bézier: os waypoints são os PONTOS DE CONTROLE.
-// O parâmetro global t ∈ [0,1] percorre toda a curva (cíclico ao atingir 1).
-// A posição é avaliada pelo algoritmo de De Casteljau.
+// curva de bezier - os waypoints sao os pontos de controle
+// t vai de 0 a 1 e fica ciclando
+// uso de casteljau pra avaliar
 struct Trajectory
 {
-    vector<glm::vec3> waypoints;  // pontos de controle
+    vector<glm::vec3> waypoints;
     bool  active  = false;
-    float t       = 0.0f;   // parâmetro global [0,1]
-    float arcLen  = 1.0f;   // comprimento de arco estimado (cache)
-    bool  dirty   = true;   // recalcular arcLen antes do próximo advance()
+    float t       = 0.0f;
+    float arcLen  = 1.0f;   // cache do comprimento
+    bool  dirty   = true;   // se true, recalcula arcLen no proximo advance
 
-    // Avalia a curva de Bézier em 'param' via De Casteljau
+    // de casteljau
     glm::vec3 evalBezier(float param) const
     {
         int n = (int)waypoints.size();
@@ -320,7 +297,7 @@ struct Trajectory
         return pts[0];
     }
 
-    // Estima o comprimento de arco por amostragem uniforme de t
+    // estima o comprimento amostrando t
     void recomputeLength(int samples = 128)
     {
         arcLen = 0.0f;
@@ -337,7 +314,7 @@ struct Trajectory
         dirty  = false;
     }
 
-    // Avança a trajetória em dt segundos e retorna a nova posição
+    // anda dt segundos e retorna a posicao
     glm::vec3 advance(float dt)
     {
         if (waypoints.size() < 2) return glm::vec3(0.0f);
@@ -353,7 +330,7 @@ struct Trajectory
 struct OBJModel
 {
     GLuint    VAO        = 0;
-    GLuint    VBO        = 0;   // mantido para liberação no cleanup
+    GLuint    VBO        = 0;   // guardado pra liberar no final
     GLuint    texID      = 0;
     int       nVertices  = 0;
     glm::vec3 position   = glm::vec3(0.0f);
@@ -363,7 +340,7 @@ struct OBJModel
     glm::vec3 color      = glm::vec3(1.0f);
     string    name;
     Material  mat;
-    bool      showTexture = true;  // alterna com tecla M
+    bool      showTexture = true;  // tecla M
 
     Trajectory traj;
 };
@@ -379,9 +356,9 @@ TransformMode currentMode = MODE_TRANSLATE;
 vector<OBJModel> objects;
 int              activeObj = 0;
 bool             keys[1024] = {};
-bool             showHelp   = true;   // H toggle
+bool             showHelp   = true;   // tecla H
 
-// Iluminação de 3 pontos
+// 3 luzes (key/fill/back)
 LightSource lights[3] = {
     { glm::vec3( 5.0f, 6.0f,  5.0f), glm::vec3(1.00f, 0.95f, 0.90f), true,  "Key"  },
     { glm::vec3(-4.0f, 3.0f,  4.0f), glm::vec3(0.40f, 0.50f, 0.80f), true,  "Fill" },
@@ -458,7 +435,7 @@ int main()
     // Carrega luzes iniciais
     uploadLights(shader);
 
-    // VAO/VBO dinâmico para waypoints e curva Bézier
+    // VAO/VBO pra desenhar a curva e os waypoints
     GLuint lineShader = setupLineShader();
     GLint  lineViewLoc  = glGetUniformLocation(lineShader, "view");
     GLint  lineProjLoc  = glGetUniformLocation(lineShader, "projection");
@@ -476,7 +453,7 @@ int main()
 
     glEnable(GL_PROGRAM_POINT_SIZE);
 
-    // VAO/VBO para o HUD 2D (stb_easy_font gera quads)
+    // VAO/VBO do HUD 2D (stb_easy_font solta quads, depois converto p/ triangulos)
     GLuint hudShader = setupHudShader();
     GLuint hudVAO = 0, hudVBO = 0, hudIBO = 0;
     glGenVertexArrays(1, &hudVAO);
@@ -484,8 +461,7 @@ int main()
     glGenBuffers(1, &hudIBO);
     glBindVertexArray(hudVAO);
     glBindBuffer(GL_ARRAY_BUFFER, hudVBO);
-    // hudText() já extrai apenas x,y para um buffer próprio (stride 8 bytes).
-    // Os fundos / sombras / bordas também são xy puros — stride 8 é o formato unificado.
+    // o hudText extrai so xy pra um buffer proprio (stride 8). os fundos/bordas tb sao xy.
     glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), (GLvoid*)0);
     glEnableVertexAttribArray(0);
     glBindBuffer(GL_ARRAY_BUFFER, 0);
@@ -494,7 +470,7 @@ int main()
     Camera camera(glm::vec3(0.0f, 2.0f, 7.0f));
     gCamera = &camera;
 
-    // Lambda auxiliar para carregar um modelo
+    // helper pra carregar um modelo
     auto addModel = [&](const string& file, const string& modelName,
                         glm::vec3 color, glm::vec3 pos)
     {
@@ -540,7 +516,7 @@ int main()
 
     loadTrajectories();
 
-    // Uniform locations (shader principal)
+    // pega as locations dos uniforms uma vez so
     GLint modelLoc      = glGetUniformLocation(shader, "model");
     GLint colorLoc      = glGetUniformLocation(shader, "objectColor");
     GLint useTextureLoc = glGetUniformLocation(shader, "useTexture");
@@ -567,7 +543,7 @@ int main()
 
         glfwPollEvents();
 
-        // ── Câmera ────────────────────────────────────────────────────────
+        // ── camera ────────────────────────────────────────────────────────
         camera.processKeyboard(window, dt);
 
         glm::mat4 view = camera.getViewMatrix();
@@ -578,17 +554,17 @@ int main()
         glUniformMatrix4fv(projLoc,  1, GL_FALSE, glm::value_ptr(proj));
         glUniform3fv(camPosLoc, 1, glm::value_ptr(camera.position));
 
-        // Atualiza posições das luzes no shader (caso mudem no futuro)
+        // manda as luzes pro shader
         uploadLights(shader);
 
-        // ── Trajetórias: avança todos os objetos que têm trajetória ativa ─
+        // ── trajetorias: avanca os objetos com curva ativa ──────────────
         for (auto& obj : objects)
         {
             if (obj.traj.active && obj.traj.waypoints.size() >= 2)
                 obj.position = obj.traj.advance(dt);
         }
 
-        // ── Transformação manual (somente quando trajetória está desligada) ─
+        // ── transformacao manual (so quando a trajetoria nao esta ativa) ─
         OBJModel& sel = objects[activeObj];
         if (!sel.traj.active)
         {
@@ -613,12 +589,12 @@ int main()
             }
         }
 
-        // Rotação automática contínua
+        // rotacao automatica dos objetos com algum eixo ativo
         for (auto& o : objects)
             if (o.rotX || o.rotY || o.rotZ)
                 o.rotAngle += ROT_SPEED * dt;
 
-        // ── Renderização ─────────────────────────────────────────────────
+        // ── render ───────────────────────────────────────────────────────
         glClearColor(0.08f, 0.08f, 0.12f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
@@ -645,7 +621,7 @@ int main()
             glPolygonOffset(1.0f, 1.0f);
             glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
 
-            // Decide se usa textura ou cor sólida
+            // usa textura ou cor solida
             bool useTex = (o.texID != 0 && o.showTexture);
             if (useTex)
             {
@@ -662,7 +638,7 @@ int main()
             glDrawArrays(GL_TRIANGLES, 0, o.nVertices);
             glDisable(GL_POLYGON_OFFSET_FILL);
 
-            // Contorno branco no objeto selecionado
+            // wireframe branco no objeto selecionado
             if (selected)
             {
                 glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
@@ -676,7 +652,7 @@ int main()
             glBindVertexArray(0);
         }
 
-        // ── Visualização da curva Bézier e pontos de controle ────────────
+        // ── desenha curva bezier e pontos de controle ────────────────────
         glUseProgram(lineShader);
         glUniformMatrix4fv(lineViewLoc, 1, GL_FALSE, glm::value_ptr(view));
         glUniformMatrix4fv(lineProjLoc, 1, GL_FALSE, glm::value_ptr(proj));
@@ -691,14 +667,14 @@ int main()
             bool      isSel    = ((int)i == activeObj);
             glm::vec3 curveCol = isSel ? glm::vec3(1.0f, 0.85f, 0.1f)  // amarelo
                                        : glm::vec3(0.5f, 0.5f, 0.6f);  // cinza
-            glm::vec3 cageCol  = isSel ? glm::vec3(1.0f, 0.5f, 0.2f)   // laranja
-                                       : glm::vec3(0.3f, 0.3f, 0.4f);  // cinza escuro
-            glm::vec3 ptCol    = isSel ? glm::vec3(1.0f, 1.0f, 0.3f)   // amarelo claro
+            glm::vec3 cageCol  = isSel ? glm::vec3(1.0f, 0.5f, 0.2f)
+                                       : glm::vec3(0.3f, 0.3f, 0.4f);
+            glm::vec3 ptCol    = isSel ? glm::vec3(1.0f, 1.0f, 0.3f)
                                        : glm::vec3(0.7f, 0.7f, 0.8f);
 
             if (wps.size() >= 2)
             {
-                // Amostra a curva de Bézier e desenha como LINE_LOOP
+                // amostra a curva e desenha como line_loop
                 vector<glm::vec3> curvePoints;
                 curvePoints.reserve(BEZIER_SAMPLES);
                 for (int k = 0; k < BEZIER_SAMPLES; ++k)
@@ -710,7 +686,7 @@ int main()
                 glUniform3fv(lineColorLoc, 1, glm::value_ptr(curveCol));
                 glDrawArrays(GL_LINE_LOOP, 0, BEZIER_SAMPLES);
 
-                // Polígono de controle (cage) em cor mais suave
+                // poligono de controle (cage)
                 glBufferData(GL_ARRAY_BUFFER,
                              wps.size() * sizeof(glm::vec3),
                              wps.data(), GL_DYNAMIC_DRAW);
@@ -719,13 +695,13 @@ int main()
             }
             else
             {
-                // Apenas 1 ponto: carrega mesmo assim para desenhar o ponto
+                // so 1 ponto - carrega mesmo assim pra desenhar o ponto
                 glBufferData(GL_ARRAY_BUFFER,
                              wps.size() * sizeof(glm::vec3),
                              wps.data(), GL_DYNAMIC_DRAW);
             }
 
-            // Pontos de controle por cima
+            // pontos por cima
             glBufferData(GL_ARRAY_BUFFER,
                          wps.size() * sizeof(glm::vec3),
                          wps.data(), GL_DYNAMIC_DRAW);
@@ -736,7 +712,7 @@ int main()
         glBindBuffer(GL_ARRAY_BUFFER, 0);
         glBindVertexArray(0);
 
-        // ── HUD de ajuda ──────────────────────────────────────────────────
+        // ── HUD ───────────────────────────────────────────────────────────
         drawHUD(hudShader, hudVAO, hudVBO, hudIBO);
 
         glfwSwapBuffers(window);
@@ -751,7 +727,7 @@ int main()
     glDeleteVertexArrays(1, &hudVAO);
     glDeleteProgram(hudShader);
 
-    // Libera VAO/VBO/textura de cada modelo carregado
+    // libera VAO/VBO/textura de cada modelo
     for (auto& o : objects)
     {
         if (o.VBO)   glDeleteBuffers(1, &o.VBO);
@@ -783,14 +759,14 @@ void key_callback(GLFWwindow* window, int key, int scancode, int action, int mod
 
     if (action != GLFW_PRESS) return;
 
-    // ── Toggle HUD ───────────────────────────────────────────────────────
+    // tecla H - mostra/esconde ajuda
     if (key == GLFW_KEY_H)
     {
         showHelp = !showHelp;
         return;
     }
 
-    // ── Seleção ──────────────────────────────────────────────────────────
+    // TAB - proximo objeto
     if (key == GLFW_KEY_TAB)
     {
         activeObj = (activeObj + 1) % (int)objects.size();
@@ -798,7 +774,7 @@ void key_callback(GLFWwindow* window, int key, int scancode, int action, int mod
         return;
     }
 
-    // ── Modos de transformação ───────────────────────────────────────────
+    // T/R/F - modos de transformacao
     if (key == GLFW_KEY_T)
     {
         if (currentMode == MODE_ROTATE)
@@ -817,6 +793,7 @@ void key_callback(GLFWwindow* window, int key, int scancode, int action, int mod
         return;
     }
 
+    // dentro do modo rotacao, X/Y/Z escolhem o eixo (so um por vez)
     if (currentMode == MODE_ROTATE)
     {
         OBJModel& obj = objects[activeObj];
@@ -825,7 +802,7 @@ void key_callback(GLFWwindow* window, int key, int scancode, int action, int mod
         if (key == GLFW_KEY_Z) { obj.rotZ = !obj.rotZ; if (obj.rotZ) { obj.rotX = obj.rotY = false; } }
     }
 
-    // ── Toggle de textura (M) ────────────────────────────────────────────
+    // M - liga/desliga textura
     if (key == GLFW_KEY_M)
     {
         OBJModel& obj = objects[activeObj];
@@ -845,7 +822,7 @@ void key_callback(GLFWwindow* window, int key, int scancode, int action, int mod
         return;
     }
 
-    // ── Toggle de iluminação (1 / 2 / 3) ────────────────────────────────
+    // 1/2/3 - liga/desliga as luzes
     if (key == GLFW_KEY_1 || key == GLFW_KEY_2 || key == GLFW_KEY_3)
     {
         int idx = (key == GLFW_KEY_1) ? 0 : (key == GLFW_KEY_2) ? 1 : 2;
@@ -856,9 +833,9 @@ void key_callback(GLFWwindow* window, int key, int scancode, int action, int mod
         return;
     }
 
-    // ── Trajetória ───────────────────────────────────────────────────────
+    // ── trajetoria ───────────────────────────────────────────────────────
 
-    // P – adiciona ponto de controle na posição atual
+    // P - adiciona um ponto de controle na posicao atual
     if (key == GLFW_KEY_P)
     {
         OBJModel& obj = objects[activeObj];
@@ -874,7 +851,7 @@ void key_callback(GLFWwindow* window, int key, int scancode, int action, int mod
         return;
     }
 
-    // C – pausar/retomar trajetória (NÃO reinicia t)
+    // C - play/pause (nao reseta o t)
     if (key == GLFW_KEY_C)
     {
         OBJModel& obj = objects[activeObj];
@@ -893,7 +870,7 @@ void key_callback(GLFWwindow* window, int key, int scancode, int action, int mod
         return;
     }
 
-    // BACKSPACE – remove último ponto de controle
+    // BACKSPACE - tira o ultimo ponto
     if (key == GLFW_KEY_BACKSPACE)
     {
         OBJModel& obj = objects[activeObj];
@@ -919,10 +896,8 @@ void key_callback(GLFWwindow* window, int key, int scancode, int action, int mod
         return;
     }
 
-    // L – salvar pontos de controle
+    // L = salvar, O = carregar
     if (key == GLFW_KEY_L) { saveTrajectories(); return; }
-
-    // O – carregar pontos de controle
     if (key == GLFW_KEY_O) { loadTrajectories(); updateWindowTitle(window); return; }
 }
 
@@ -937,13 +912,13 @@ void scroll_callback(GLFWwindow* window, double xoffset, double yoffset)
 }
 
 
-// ─── Upload de luzes para o shader ───────────────────────────────────────────
+// ─── Manda as luzes pro shader ───────────────────────────────────────────────
 
 void uploadLights(GLuint shader)
 {
     glUseProgram(shader);
 
-    // Cache estático: glGetUniformLocation só corre na primeira chamada por shader.
+    // cache: so chama glGetUniformLocation 1 vez por shader (fica caro chamar todo frame)
     static GLuint  cachedShader = 0;
     static GLint   posLoc[3], colLoc[3], onLoc[3];
     if (cachedShader != shader)
@@ -969,13 +944,11 @@ void uploadLights(GLuint shader)
 }
 
 
-// ─── Trajetórias: salvar / carregar ──────────────────────────────────────────
-/*
- Formato trajectories.txt:
-   object <nome>
-   waypoint <x> <y> <z>
-   ...
-*/
+// ─── salvar / carregar trajetorias ──────────────────────────────────────────
+// formato:
+//   object <nome>
+//   waypoint <x> <y> <z>
+//   ...
 
 void saveTrajectories()
 {
@@ -1048,7 +1021,7 @@ void loadTrajectories()
 }
 
 
-// ─── Atualização do título da janela ─────────────────────────────────────────
+// ─── titulo da janela ───────────────────────────────────────────────────────
 
 void updateWindowTitle(GLFWwindow* window)
 {
@@ -1071,7 +1044,7 @@ void updateWindowTitle(GLFWwindow* window)
     else if (!obj.traj.waypoints.empty())
         trajInfo = " [n=" + to_string(obj.traj.waypoints.size()) + "]";
 
-    // Status das luzes: K=key F=fill B=back
+    // K=key F=fill B=back (maiusculo = ligado, minusculo = desligado)
     string lightStr = " | ";
     lightStr += lights[0].on ? "K" : "k";
     lightStr += lights[1].on ? "F" : "f";
@@ -1164,7 +1137,7 @@ GLuint setupLineShader()
 }
 
 
-// ─── Carregamento de textura ─────────────────────────────────────────────────
+// ─── Carrega textura ─────────────────────────────────────────────────────────
 
 GLuint loadTexture(const string& filePath)
 {
@@ -1172,10 +1145,11 @@ GLuint loadTexture(const string& filePath)
     glGenTextures(1, &texID);
     glBindTexture(GL_TEXTURE_2D, texID);
 
+    // filtro nearest pra dar uma cara mais "pixelada" (sem mipmap)
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S,     GL_REPEAT);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T,     GL_REPEAT);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
 
     int w, h, ch;
     stbi_set_flip_vertically_on_load(true);
@@ -1185,7 +1159,7 @@ GLuint loadTexture(const string& filePath)
     {
         GLenum fmt = (ch == 4) ? GL_RGBA : GL_RGB;
         glTexImage2D(GL_TEXTURE_2D, 0, fmt, w, h, 0, fmt, GL_UNSIGNED_BYTE, data);
-        glGenerateMipmap(GL_TEXTURE_2D);
+        // sem mipmap mesmo
     }
     else
     {
@@ -1200,7 +1174,7 @@ GLuint loadTexture(const string& filePath)
 }
 
 
-// ─── HUD de ajuda (stb_easy_font) ────────────────────────────────────────────
+// ─── HUD de ajuda (usa stb_easy_font) ───────────────────────────────────────
 
 GLuint setupHudShader()
 {
@@ -1222,16 +1196,15 @@ GLuint setupHudShader()
     return prog;
 }
 
-// Desenha uma linha de texto usando stb_easy_font.
-// vbo e vao devem já ter sido configurados com stride=8, attrib 0 = vec2.
-// ibo é reutilizado entre chamadas (evita gen/delete por frame).
+// desenha uma linha de texto. vbo/vao precisam estar com stride=8 e attrib 0 = vec2.
+// o ibo eh reaproveitado entre chamadas pra nao ficar gerando/deletando todo frame.
 static void hudText(GLuint vbo, GLuint ibo, float px, float py, float scale, const char* text)
 {
     static char buf[99999];
     int nq = stb_easy_font_print(0, 0, const_cast<char*>(text), NULL, buf, sizeof(buf));
 
-    // stb_easy_font gera quads (4 verts cada, stride 16 bytes: x,y,z,rgba).
-    // Construímos um vector<float> xy-only escalado e posicionado.
+    // o stb_easy_font solta quads (4 verts cada, stride 16: x,y,z + rgba).
+    // monto um vector xy escalado e ja posicionado.
     int nv = nq * 4;
     vector<float> verts;
     verts.reserve(nv * 2);
@@ -1242,7 +1215,7 @@ static void hudText(GLuint vbo, GLuint ibo, float px, float py, float scale, con
         verts.push_back(py + v[1] * scale);
     }
 
-    // Cria índices para converter quads em triângulos (2 por quad)
+    // converte cada quad em 2 triangulos
     vector<unsigned int> idx;
     idx.reserve(nq * 6);
     for (int q = 0; q < nq; ++q)
@@ -1252,12 +1225,12 @@ static void hudText(GLuint vbo, GLuint ibo, float px, float py, float scale, con
         idx.push_back(b+0); idx.push_back(b+2); idx.push_back(b+3);
     }
 
-    // VBO para xy
+    // sobe os xy
     glBindBuffer(GL_ARRAY_BUFFER, vbo);
     glBufferData(GL_ARRAY_BUFFER, verts.size() * sizeof(float), verts.data(), GL_DYNAMIC_DRAW);
     glBindBuffer(GL_ARRAY_BUFFER, 0);
 
-    // IBO persistente (reutilizado entre chamadas)
+    // ibo (reaproveitado)
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ibo);
     glBufferData(GL_ELEMENT_ARRAY_BUFFER, idx.size() * sizeof(unsigned int), idx.data(), GL_DYNAMIC_DRAW);
 
@@ -1268,7 +1241,7 @@ static void hudText(GLuint vbo, GLuint ibo, float px, float py, float scale, con
 
 void drawHUD(GLuint hudShader, GLuint hudVAO, GLuint hudVBO, GLuint hudIBO)
 {
-    // Projeção ortogonal: pixel (0,0) = canto sup-esq, y cresce pra baixo
+    // ortho em pixels: (0,0) = canto sup esq, y cresce pra baixo
     glm::mat4 ortho = glm::ortho(0.0f, (float)WIDTH, (float)HEIGHT, 0.0f, -1.0f, 1.0f);
 
     glDisable(GL_DEPTH_TEST);
@@ -1282,10 +1255,8 @@ void drawHUD(GLuint hudShader, GLuint hudVAO, GLuint hudVBO, GLuint hudIBO)
 
     glBindVertexArray(hudVAO);
 
-    // ── Painel de fundo semi-transparente ────────────────────────────────
-    // Sempre visível: barra de status no topo
+    // ── barra de status no topo (sempre visivel) ─────────────────────────
     {
-        // Fundo escuro da barra de status
         const OBJModel& obj = objects[activeObj];
         string modeStr = (currentMode == MODE_TRANSLATE) ? "TRANS" :
                          (currentMode == MODE_ROTATE)    ? "ROT"   : "SCALE";
@@ -1305,7 +1276,7 @@ void drawHUD(GLuint hudShader, GLuint hudVAO, GLuint hudVBO, GLuint hudIBO)
                           + "  " + lights_s
                           + "  |  H=ajuda";
 
-        // Fundo da barra de status
+        // fundo da barra
         float bh = 22.0f;
         float barVerts[] = { 0,0, (float)WIDTH,0, (float)WIDTH,bh, 0,0, (float)WIDTH,bh, 0,bh };
         glUniform4f(colLoc, 0.0f, 0.0f, 0.0f, 0.65f);
@@ -1318,10 +1289,9 @@ void drawHUD(GLuint hudShader, GLuint hudVAO, GLuint hudVBO, GLuint hudIBO)
         hudText(hudVBO, hudIBO, 6.0f, 5.0f, 1.5f, statusLine.c_str());
     }
 
-    // ── Painel completo de ajuda (visível quando showHelp == true) ───────
+    // ── painel de ajuda (so quando showHelp == true) ─────────────────────
     if (showHelp)
     {
-        // Estrutura de seções e entradas do painel
         struct Entry { const char* key; const char* desc; };
         struct Section { const char* title; vector<Entry> entries; };
 
@@ -1364,25 +1334,25 @@ void drawHUD(GLuint hudShader, GLuint hudVAO, GLuint hudVBO, GLuint hudIBO)
             }},
         };
 
-        // Calcula dimensões do painel
+        // dimensoes do painel
         const float SCALE   = 1.5f;
-        const float LHEIGHT = 13.0f * SCALE;  // altura de uma linha
-        const float SHEIGHT = 17.0f * SCALE;  // altura do cabeçalho de secao
+        const float LHEIGHT = 13.0f * SCALE;  // altura de cada linha
+        const float SHEIGHT = 17.0f * SCALE;  // altura do cabecalho de secao
         const float PAD     = 10.0f;
         const float COL_KEY = 110.0f;
         const float COL_DESC= 260.0f;
 
         int totalLines = 0;
         for (auto& s : sections) totalLines += 1 + (int)s.entries.size();
-        // PAD topo + (titulo + 1.1*SHEIGHT) + separador (~6px) + linhas + cabecalhos extra + PAD base
+        // PAD topo + titulo (~1.1*SHEIGHT) + separador (~6) + linhas + extras dos cabecalhos + PAD baixo
         float titleBlock = SHEIGHT * 1.1f + 6.0f;
         float panelH = PAD + titleBlock + totalLines * LHEIGHT
                      + sections.size() * (SHEIGHT - LHEIGHT) + PAD;
         float panelW = PAD + COL_KEY + COL_DESC + PAD;
         float px = (float)WIDTH  - panelW - 12.0f;
-        float py = 28.0f;  // abaixo da barra de status
+        float py = 28.0f;  // logo abaixo da barra de status
 
-        // Sombra
+        // sombra
         {
             float sx = px + 4, sy = py + 4;
             float sv[] = { sx,sy, sx+panelW,sy, sx+panelW,sy+panelH,
@@ -1394,7 +1364,7 @@ void drawHUD(GLuint hudShader, GLuint hudVAO, GLuint hudVBO, GLuint hudIBO)
             glDrawArrays(GL_TRIANGLES, 0, 6);
         }
 
-        // Fundo do painel
+        // fundo do painel
         {
             float bv[] = { px,py, px+panelW,py, px+panelW,py+panelH,
                            px,py, px+panelW,py+panelH, px,py+panelH };
@@ -1405,7 +1375,7 @@ void drawHUD(GLuint hudShader, GLuint hudVAO, GLuint hudVBO, GLuint hudIBO)
             glDrawArrays(GL_TRIANGLES, 0, 6);
         }
 
-        // Borda do painel (4 retângulos finos de 2px)
+        // borda (4 retangulos finos)
         {
             float t = 2.0f;
             float borders[][12] = {
@@ -1424,13 +1394,13 @@ void drawHUD(GLuint hudShader, GLuint hudVAO, GLuint hudVBO, GLuint hudIBO)
             }
         }
 
-        // Título do painel
+        // titulo
         float cy = py + PAD;
         glUniform4f(colLoc, 1.0f, 1.0f, 1.0f, 1.0f);
         hudText(hudVBO, hudIBO, px + PAD, cy, SCALE, "CONTROLES  (H = fechar)");
         cy += SHEIGHT * 1.1f;
 
-        // Linha separadora
+        // separador
         {
             float sep[] = { px+PAD, cy, px+panelW-PAD, cy, px+panelW-PAD, cy+1.5f,
                             px+PAD, cy, px+panelW-PAD, cy+1.5f, px+PAD, cy+1.5f };
@@ -1442,10 +1412,10 @@ void drawHUD(GLuint hudShader, GLuint hudVAO, GLuint hudVBO, GLuint hudIBO)
         }
         cy += 6.0f;
 
-        // Conteúdo das seções
+        // secoes
         for (const auto& sec : sections)
         {
-            // Cabeçalho de seção — fundo levemente destacado
+            // fundo do cabecalho da secao
             {
                 float sh = SHEIGHT;
                 float sv[] = { px+PAD-2,cy-2, px+panelW-PAD+2,cy-2, px+panelW-PAD+2,cy+sh-2,
@@ -1460,16 +1430,16 @@ void drawHUD(GLuint hudShader, GLuint hudVAO, GLuint hudVBO, GLuint hudIBO)
             hudText(hudVBO, hudIBO, px + PAD + 2, cy, SCALE, sec.title);
             cy += SHEIGHT;
 
-            // Entradas
+            // entradas
             for (const auto& e : sec.entries)
             {
                 if (e.key[0] != '\0')
                 {
-                    // Tecla em amarelo
+                    // tecla amarela
                     glUniform4f(colLoc, 1.0f, 0.88f, 0.30f, 1.0f);
                     hudText(hudVBO, hudIBO, px + PAD + 4, cy, SCALE, e.key);
                 }
-                // Descrição em branco suave
+                // descricao em branco suave
                 glUniform4f(colLoc, 0.85f, 0.88f, 0.92f, 1.0f);
                 hudText(hudVBO, hudIBO, px + PAD + COL_KEY, cy, SCALE, e.desc);
                 cy += LHEIGHT;
