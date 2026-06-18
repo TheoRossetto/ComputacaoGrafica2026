@@ -365,6 +365,10 @@ LightSource lights[3] = {
     { glm::vec3( 0.0f, 4.0f, -6.0f), glm::vec3(0.70f, 0.60f, 0.90f), true,  "Back" },
 };
 
+// tamanho atual do framebuffer (atualiza em fullscreen / resize)
+int fbWidth  = (int)WIDTH;
+int fbHeight = (int)HEIGHT;
+
 
 // ─── Declarações ─────────────────────────────────────────────────────────────
 
@@ -403,6 +407,13 @@ int main()
     glfwSetWindowFocusCallback(window, [](GLFWwindow*, int focused) {
         if (!focused) fill(begin(keys), end(keys), false);
     });
+    // resize: atualiza viewport e dimensoes globais
+    glfwSetFramebufferSizeCallback(window, [](GLFWwindow*, int w, int h) {
+        if (w <= 0 || h <= 0) return;
+        fbWidth  = w;
+        fbHeight = h;
+        glViewport(0, 0, w, h);
+    });
 
     if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress))
     { cerr << "Failed to initialize GLAD\n"; return -1; }
@@ -426,6 +437,8 @@ int main()
     int fbW, fbH;
     glfwGetFramebufferSize(window, &fbW, &fbH);
     glViewport(0, 0, fbW, fbH);
+    fbWidth  = fbW;
+    fbHeight = fbH;
 
     GLuint shader = setupShader();
     glUseProgram(shader);
@@ -528,7 +541,7 @@ int main()
     GLint projLoc       = glGetUniformLocation(shader, "projection");
     GLint camPosLoc     = glGetUniformLocation(shader, "camPos");
 
-    float aspect = (float)WIDTH / (float)HEIGHT;
+    float aspect = (float)WIDTH / (float)HEIGHT;  // recalculado a cada frame com base em fbWidth/fbHeight
 
     glEnable(GL_DEPTH_TEST);
     updateWindowTitle(window);
@@ -546,6 +559,7 @@ int main()
         // ── camera ────────────────────────────────────────────────────────
         camera.processKeyboard(window, dt);
 
+        aspect = (fbHeight > 0) ? (float)fbWidth / (float)fbHeight : 1.0f;
         glm::mat4 view = camera.getViewMatrix();
         glm::mat4 proj = camera.getProjectionMatrix(aspect);
 
@@ -1242,7 +1256,7 @@ static void hudText(GLuint vbo, GLuint ibo, float px, float py, float scale, con
 void drawHUD(GLuint hudShader, GLuint hudVAO, GLuint hudVBO, GLuint hudIBO)
 {
     // ortho em pixels: (0,0) = canto sup esq, y cresce pra baixo
-    glm::mat4 ortho = glm::ortho(0.0f, (float)WIDTH, (float)HEIGHT, 0.0f, -1.0f, 1.0f);
+    glm::mat4 ortho = glm::ortho(0.0f, (float)fbWidth, (float)fbHeight, 0.0f, -1.0f, 1.0f);
 
     glDisable(GL_DEPTH_TEST);
     glEnable(GL_BLEND);
@@ -1278,7 +1292,7 @@ void drawHUD(GLuint hudShader, GLuint hudVAO, GLuint hudVBO, GLuint hudIBO)
 
         // fundo da barra
         float bh = 22.0f;
-        float barVerts[] = { 0,0, (float)WIDTH,0, (float)WIDTH,bh, 0,0, (float)WIDTH,bh, 0,bh };
+        float barVerts[] = { 0,0, (float)fbWidth,0, (float)fbWidth,bh, 0,0, (float)fbWidth,bh, 0,bh };
         glUniform4f(colLoc, 0.0f, 0.0f, 0.0f, 0.65f);
         glBindBuffer(GL_ARRAY_BUFFER, hudVBO);
         glBufferData(GL_ARRAY_BUFFER, sizeof(barVerts), barVerts, GL_DYNAMIC_DRAW);
@@ -1349,7 +1363,7 @@ void drawHUD(GLuint hudShader, GLuint hudVAO, GLuint hudVBO, GLuint hudIBO)
         float panelH = PAD + titleBlock + totalLines * LHEIGHT
                      + sections.size() * (SHEIGHT - LHEIGHT) + PAD;
         float panelW = PAD + COL_KEY + COL_DESC + PAD;
-        float px = (float)WIDTH  - panelW - 12.0f;
+        float px = (float)fbWidth  - panelW - 12.0f;
         float py = 28.0f;  // logo abaixo da barra de status
 
         // sombra
